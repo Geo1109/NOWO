@@ -1,0 +1,5 @@
+{
+  "name": "SafeWalk",
+  "description": "A crowdsourced urban safety platform for safer walking routes and real-time alerts.",
+  "requestFramePermissions": ["geolocation"]
+}

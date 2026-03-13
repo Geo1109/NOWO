@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Syne", sans-serif;
+  --color-primary: #3B49DF;
+  --color-accent: #FF7D45;
+  --color-safe: #10B981;
+  --color-navy-dark: #0A0F1E;
+  --color-navy-light: #111827;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans transition-colors duration-300 antialiased;
+  }
+  h1, h2, h3, h4 {
+    @apply font-display font-bold text-slate-900;
+  }
+}
+
+@utility glass {
+  @apply bg-white/95 backdrop-blur-xl border border-slate-200 shadow-xl;
+}
+
+.glow-primary {
+  box-shadow: 0 10px 25px -5px rgba(59, 73, 223, 0.3);
+}
+
+.glow-accent {
+  box-shadow: 0 10px 25px -5px rgba(225, 29, 72, 0.3);
+}
+
+.glow-safe {
+  box-shadow: 0 10px 25px -5px rgba(5, 150, 105, 0.3);
+}
+
+/* Leaflet Overrides */
+.leaflet-container {
+  background: #F8FAFC !important;
+}
+
+.leaflet-control-attribution {
+  display: none !important;
+}
+
+.leaflet-bar {
+  border: none !important;
+  @apply glass rounded-2xl overflow-hidden shadow-lg;
+}
+
+.leaflet-bar a {
+  background-color: transparent !important;
+  color: #3B49DF !important;
+  border: none !important;
+}
+
+.leaflet-bar a:hover {
+  @apply bg-slate-100;
+}
+
+/* Custom Marker Styles */
+.custom-div-icon {
+  background: none;
+  border: none;
+}
+
+.marker-pin {
+  @apply flex items-center justify-center rounded-full border-2 border-white shadow-md transition-transform duration-200;
+}
+
+.marker-pin-report {
+  @apply w-8 h-8 bg-rose-500 text-white flex items-center justify-center rounded-full border-2 border-white shadow-lg;
+}
+
+.marker-pin-safe {
+  @apply w-10 h-10 bg-white text-emerald-600 flex items-center justify-center rounded-full border-2 border-emerald-500 shadow-lg;
+}
+
+.marker-pin:hover {
+  @apply scale-110;
+}
+
+/* Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full border-2 border-slate-100;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
+}
