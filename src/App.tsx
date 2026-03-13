@@ -232,9 +232,13 @@ function AppContent() {
   const reportsLayerRef = useRef<any>(null);
   const safeSpacesLayerRef = useRef<any>(null);
   const reportLocationMarkerRef = useRef<any>(null);
+  const reportingActiveRef = useRef(false);
   const lastSafeSpacesFetchRef = useRef<string>('');
 
-  // Fetch Reports from Firestore
+  // Keep reportingActiveRef in sync so map click handler always has latest value
+  useEffect(() => {
+    reportingActiveRef.current = showReportModal;
+  }, [showReportModal]);
   useEffect(() => {
     const latDelta = 0.18;
     const lngDelta = 0.25; 
@@ -328,10 +332,9 @@ function AppContent() {
     reportsLayerRef.current = L.layerGroup().addTo(mapRef.current);
     safeSpacesLayerRef.current = L.layerGroup().addTo(mapRef.current);
 
-    // Map Click Handler for Reporting
+    // Map Click Handler — always active when showReportModal is true
     mapRef.current.on('click', (e: any) => {
-      const reportModalOpen = document.getElementById('report-modal-overlay');
-      if (reportModalOpen) {
+      if (reportingActiveRef.current) {
         const { lat, lng } = e.latlng;
         setReportLocation([lat, lng]);
       }
