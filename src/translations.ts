@@ -32,8 +32,8 @@ export const translations: Record<Language, any> = {
     reports: "reports",
     darkMode: "Dark Mode",
     lightMode: "Light Mode",
-    fastestPath: "Fastest Path",
-    safePath: "Safe Path",
+    fastestPath: "Fastest Walk",
+    safePath: "Safest Walk",
     avoiding: "Avoiding",
     dangerZones: "danger zones",
     categories: {
@@ -78,8 +78,8 @@ export const translations: Record<Language, any> = {
     reports: "rapoarte",
     darkMode: "Mod Întunecat",
     lightMode: "Mod Luminos",
-    fastestPath: "Cel mai rapid traseu",
-    safePath: "Traseu sigur",
+    fastestPath: "Cel mai rapid mers",
+    safePath: "Cel mai sigur mers",
     avoiding: "Evită",
     dangerZones: "zone periculoase",
     categories: {

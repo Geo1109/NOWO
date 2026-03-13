@@ -1,0 +1,29 @@
+{
+  "entities": {
+    "Report": {
+      "title": "Report",
+      "description": "A danger zone or incident report pinned on the map.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "categories": { 
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "details": { "type": "string" },
+        "weight": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "isLive": { "type": "boolean" }
+      },
+      "required": ["id", "lat", "lng", "categories", "weight", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Collection of danger zone reports."
+    }
+  }
+}

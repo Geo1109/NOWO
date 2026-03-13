@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isValidReport(data) {
+      return data.keys().hasAll(['id', 'lat', 'lng', 'categories', 'weight', 'timestamp']) &&
+             data.id is string &&
+             data.lat is number &&
+             data.lng is number &&
+             data.categories is list &&
+             data.weight is number &&
+             data.timestamp is string;
+    }
+
+    match /reports/{reportId} {
+      // Allowing public read and write for unauthenticated multi-user access as requested.
+      // WARNING: This is insecure for production but fits the "unauthenticated" requirement.
+      allow read: if true;
+      allow create: if isValidReport(request.resource.data);
+      allow update: if isValidReport(request.resource.data) && 
+                      request.resource.data.id == resource.data.id;
+      allow delete: if false; // Prevent deletion by public users
+    }
+  }
+}
