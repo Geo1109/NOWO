@@ -55,6 +55,146 @@ import { ReportModal } from './components/ReportModal';
 import { ZoneDetailsModal } from './components/ZoneDetailsModal';
 import { SpaceDetailsModal } from './components/SpaceDetailsModal';
 
+// --- Safe Space icon SVG generator ---
+// Clean minimal map icons — white pill with colored icon inside
+function createSafeSpaceIconHtml(type: string): string {
+  const configs: Record<string, { color: string; path: string }> = {
+    pharmacy:    { color: '#10b981', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 5v14M5 12h14"/>' },
+    hospital:    { color: '#3b82f6', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 5v14M5 12h14"/>' },
+    police:      { color: '#6366f1', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>' },
+    supermarket: { color: '#f97316', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2 2m12-2l2 2M9 21a1 1 0 100-2 1 1 0 000 2zm6 0a1 1 0 100-2 1 1 0 000 2z"/>' },
+    convenience: { color: '#f59e0b', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2 2m12-2l2 2M9 21a1 1 0 100-2 1 1 0 000 2zm6 0a1 1 0 100-2 1 1 0 000 2z"/>' },
+    doctors:     { color: '#14b8a6', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 5v14M5 12h14"/>' },
+    clinic:      { color: '#06b6d4', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 5v14M5 12h14"/>' },
+  };
+  const cfg = configs[type] || { color: '#64748b', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>' };
+
+  return `
+    <div style="
+      width:36px; height:36px;
+      background:white;
+      border-radius:50%;
+      border:2.5px solid ${cfg.color};
+      box-shadow:0 2px 8px rgba(0,0,0,0.18);
+      display:flex; align-items:center; justify-content:center;
+    ">
+      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${cfg.color}">
+        ${cfg.path}
+      </svg>
+    </div>
+  `;
+}
+
+// Check if a place is open right now based on opening_hours tag
+function isOpenNow(openingHours?: string): boolean {
+  if (!openingHours) return true; // no data = assume open (don't hide it)
+  if (openingHours === '24/7') return true;
+  
+  try {
+    const now = new Date();
+    const day = now.getDay(); // 0=Sun, 1=Mon...
+    const hour = now.getHours();
+    const min = now.getMinutes();
+    const currentMins = hour * 60 + min;
+
+    // Map day number to OSM abbreviations
+    const dayAbbr = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+    const today = dayAbbr[day];
+
+    // Try to parse simple formats like "Mo-Fr 08:00-20:00" or "Mo-Sa 09:00-21:00"
+    const rules = openingHours.split(';').map(r => r.trim());
+    
+    for (const rule of rules) {
+      const match = rule.match(/^([A-Za-z,\-\s]+)\s+(\d{2}):(\d{2})-(\d{2}):(\d{2})$/);
+      if (!match) continue;
+      
+      const dayRange = match[1].trim();
+      const startMins = parseInt(match[2]) * 60 + parseInt(match[3]);
+      const endMins = parseInt(match[4]) * 60 + parseInt(match[5]);
+      
+      // Check if today is in day range
+      const days = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+      let inDay = false;
+      
+      if (dayRange.includes('-')) {
+        const parts = dayRange.split('-').map(d => d.trim());
+        const startIdx = days.indexOf(parts[0]);
+        const endIdx = days.indexOf(parts[1]);
+        const todayIdx = days.indexOf(today);
+        if (startIdx !== -1 && endIdx !== -1 && todayIdx !== -1) {
+          inDay = todayIdx >= startIdx && todayIdx <= endIdx;
+        }
+      } else {
+        inDay = dayRange.includes(today);
+      }
+      
+      if (inDay && currentMins >= startMins && currentMins <= endMins) return true;
+    }
+    
+    return false;
+  } catch {
+    return true; // parse error = assume open
+  }
+}
+
+// --- Parse Overpass element into SafeSpace ---
+function parseOverpassElement(el: any): SafeSpace | null {
+  const tags = el.tags || {};
+  const amenity = tags.amenity || tags.shop || '';
+  
+  // Skip elements without coordinates
+  if (el.lat === undefined || el.lon === undefined) return null;
+
+  const typeMap: Record<string, SafeSpace['type']> = {
+    pharmacy: 'pharmacy',
+    hospital: 'hospital',
+    police: 'police',
+    supermarket: 'supermarket',
+    convenience: 'convenience',
+    chemist: 'pharmacy',
+    doctors: 'doctors',
+    clinic: 'clinic',
+    fast_food: 'convenience',
+    cafe: 'convenience',
+    bar: 'convenience',
+    restaurant: 'convenience',
+  };
+
+  const type = typeMap[amenity];
+  if (!type) return null;
+
+  const labelMap: Record<string, string> = {
+    pharmacy: 'Farmacie',
+    hospital: 'Spital',
+    police: 'Secție Poliție',
+    supermarket: 'Supermarket',
+    convenience: 'Magazin',
+    doctors: 'Cabinet Medical',
+    clinic: 'Clinică',
+  };
+
+  const name = tags.name || tags['name:ro'] || tags['name:en'] || labelMap[type];
+
+  const addressParts = [tags['addr:street'], tags['addr:housenumber'], tags['addr:city']].filter(Boolean);
+  const address = addressParts.join(', ');
+
+  const openingHoursRaw = tags.opening_hours || '';
+
+  return {
+    id: String(el.id),
+    name,
+    type,
+    lat: el.lat,
+    lng: el.lon,
+    details: address || 'Spațiu sigur verificat',
+    address,
+    phone: tags.phone || tags['contact:phone'] || '',
+    openingHours: openingHoursRaw,
+    openNow: isOpenNow(openingHoursRaw),
+    website: tags.website || tags['contact:website'] || '',
+  } as SafeSpace;
+}
+
 // --- Main App ---
 
 export default function App() {
@@ -75,13 +215,14 @@ function AppContent() {
   const [selectedZone, setSelectedZone] = useState<Report | null>(null);
   const [selectedSpace, setSelectedSpace] = useState<SafeSpace | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
-  const [safeSpaces, setSafeSpaces] = useState<SafeSpace[]>(MOCK_SAFE_SPACES);
+  const [safeSpaces, setSafeSpaces] = useState<SafeSpace[]>([]);
   const [userLocation, setUserLocation] = useState<[number, number]>([45.7489, 21.2087]);
   const [reportLocation, setReportLocation] = useState<[number, number] | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteInfo | null>(null);
   const [proximityAlert, setProximityAlert] = useState<string | null>(null);
   const [initialDestination, setInitialDestination] = useState<SearchResult | null>(null);
+  const [safeSpacesLoading, setSafeSpacesLoading] = useState(false);
   
   const mapRef = useRef<any>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -91,12 +232,11 @@ function AppContent() {
   const reportsLayerRef = useRef<any>(null);
   const safeSpacesLayerRef = useRef<any>(null);
   const reportLocationMarkerRef = useRef<any>(null);
+  const lastSafeSpacesFetchRef = useRef<string>('');
 
-  // Fetch Reports from Firestore (Geo-filtered to 20km radius)
+  // Fetch Reports from Firestore
   useEffect(() => {
-    // 1 degree lat is ~111km. 20km is ~0.18 degrees.
     const latDelta = 0.18;
-    // For longitude, it depends on latitude, but 0.25 is a safe broad estimate for 20km in most inhabited areas
     const lngDelta = 0.25; 
 
     const minLat = userLocation[0] - latDelta;
@@ -104,8 +244,6 @@ function AppContent() {
     const minLng = userLocation[1] - lngDelta;
     const maxLng = userLocation[1] + lngDelta;
 
-    // We filter by Latitude in Firestore to reduce data transfer significantly.
-    // Longitude filtering is done on the client to avoid complex composite index requirements.
     const q = query(
       collection(db, "reports"), 
       where("lat", ">=", minLat),
@@ -116,8 +254,6 @@ function AppContent() {
       const reportsData: Report[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
-        
-        // Client-side Longitude & precise distance filtering
         if (data.lng >= minLng && data.lng <= maxLng) {
           reportsData.push({
             id: doc.id,
@@ -133,26 +269,41 @@ function AppContent() {
       handleFirestoreError(error, OperationType.LIST, "reports");
     });
     return () => unsubscribe();
-  }, [userLocation]); // Re-run when user moves
+  }, [userLocation]);
 
-  // Fetch Real Safe Spaces
+  // Fetch Real Safe Spaces from Overpass via backend
   const fetchSafeSpaces = async (lat: number, lon: number) => {
+    // Avoid re-fetching if user hasn't moved more than ~200m
+    const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+    if (key === lastSafeSpacesFetchRef.current) return;
+    lastSafeSpacesFetchRef.current = key;
+
+    setSafeSpacesLoading(true);
     try {
       const res = await fetch(`/api/safe-spaces?lat=${lat}&lon=${lon}`);
-      if (!res.ok) throw new Error("Backend failed to fetch safe spaces");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error('Google Places detail:', JSON.stringify(errData));
+        throw new Error(errData.detail || errData.error || 'Backend error');
+      }
       const data = await res.json();
-      
-      const realSpaces: SafeSpace[] = data.elements.map((el: any) => ({
-        id: el.id.toString(),
-        name: el.tags.name || el.tags.amenity.charAt(0).toUpperCase() + el.tags.amenity.slice(1),
-        type: el.tags.amenity === 'pharmacy' ? 'pharmacy' : el.tags.amenity === 'police' ? 'police' : 'hospital',
-        lat: el.lat,
-        lng: el.lon,
-        details: el.tags['addr:street'] ? `${el.tags['addr:street']} ${el.tags['addr:housenumber'] || ''}` : 'Verified Safe Space'
-      }));
-      setSafeSpaces(realSpaces);
+
+      const parsed: SafeSpace[] = (data.places || [])
+        .map((p: any) => ({
+          ...p,
+          distance: Math.round(Math.sqrt(
+            Math.pow(p.lat - lat, 2) + Math.pow(p.lng - lon, 2)
+          ) * 111000),
+        }))
+        .sort((a: any, b: any) => a.distance - b.distance);
+
+      setSafeSpaces(parsed);
     } catch (e) {
-      console.error("Safe spaces error:", e);
+      console.error('Safe spaces fetch error:', e);
+      // Fallback to mock data if API fails
+      setSafeSpaces(MOCK_SAFE_SPACES);
+    } finally {
+      setSafeSpacesLoading(false);
     }
   };
 
@@ -179,7 +330,6 @@ function AppContent() {
 
     // Map Click Handler for Reporting
     mapRef.current.on('click', (e: any) => {
-      // We check if the modal is open but we allow clicks to pass through if we're in "marking mode"
       const reportModalOpen = document.getElementById('report-modal-overlay');
       if (reportModalOpen) {
         const { lat, lng } = e.latlng;
@@ -210,18 +360,15 @@ function AppContent() {
           mapRef.current.panTo(newPos);
         }
 
-        // Proximity checks
         reports.forEach(report => {
           const dist = L.latLng(newPos).distanceTo(L.latLng(report.lat, report.lng));
           if (dist < 100) {
             const msg = `Warning: You are entering a danger zone (${report.categories.join(', ')})`;
-            if (proximityAlert !== msg) {
-              setProximityAlert(msg);
-            }
+            if (proximityAlert !== msg) setProximityAlert(msg);
           }
         });
 
-        // Auto-fetch safe spaces when location changes significantly
+        // Re-fetch safe spaces if user moved significantly and they're shown
         if (showSafeSpaces) {
           fetchSafeSpaces(latitude, longitude);
         }
@@ -229,20 +376,22 @@ function AppContent() {
     }
   }, [isNavigating, reports]);
 
-  // Fetch safe spaces when toggled
+  // Fetch safe spaces when toggle is turned on
   useEffect(() => {
     if (showSafeSpaces) {
       fetchSafeSpaces(userLocation[0], userLocation[1]);
+    } else {
+      // Clear markers when toggled off
+      if (safeSpacesLayerRef.current) safeSpacesLayerRef.current.clearLayers();
     }
   }, [showSafeSpaces]);
 
-  // Update Markers
+  // Update Map Markers
   useEffect(() => {
     if (!mapRef.current) return;
     const L = (window as any).L;
     if (!L) return;
 
-    // Clear existing layers
     if (reportsLayerRef.current) reportsLayerRef.current.clearLayers();
     if (safeSpacesLayerRef.current) safeSpacesLayerRef.current.clearLayers();
     if (reportLocationMarkerRef.current) {
@@ -265,39 +414,36 @@ function AppContent() {
       circle.on('click', () => setSelectedZone(report));
     });
 
-    // Add Safe Spaces
+    // Add Safe Space Markers with SVG pin icons
     if (showSafeSpaces) {
       safeSpaces.forEach(space => {
-        const iconMap: any = {
-          pharmacy: '💊',
-          store: '🛒',
-          hospital: '🏥',
-          police: '👮'
-        };
-
-        const iconHtml = `<div class="marker-pin-safe">
-          <span style="font-size: 18px;">${iconMap[space.type] || '🛡️'}</span>
-        </div>`;
-        
         const icon = L.divIcon({
-          className: 'custom-div-icon',
-          html: iconHtml,
-          iconSize: [40, 40],
-          iconAnchor: [20, 20]
+          className: '',
+          html: createSafeSpaceIconHtml(space.type),
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
+          popupAnchor: [0, -22],
         });
 
-        const marker = L.marker([space.lat, space.lng], { icon }).addTo(safeSpacesLayerRef.current);
+        const marker = L.marker([space.lat, space.lng], { icon })
+          .addTo(safeSpacesLayerRef.current);
+
         marker.on('click', () => setSelectedSpace(space));
       });
     }
 
     // Add Report Location Marker
     if (reportLocation) {
-      const iconHtml = `<div class="marker-pin-report">
-        <span style="font-size: 14px;">📍</span>
-      </div>`;
+      const iconHtml = `<div style="
+        width:32px;height:32px;
+        background:#ef4444;
+        border-radius:50% 50% 50% 0;
+        transform:rotate(-45deg);
+        border:3px solid white;
+        box-shadow:0 2px 8px rgba(0,0,0,0.3);
+      "></div>`;
       const icon = L.divIcon({
-        className: 'custom-div-icon',
+        className: '',
         html: iconHtml,
         iconSize: [32, 32],
         iconAnchor: [16, 32]
@@ -315,7 +461,7 @@ function AppContent() {
       lng: reportLocation[1],
       categories,
       details,
-      timestamp: new Date().toISOString(), // Store as ISO for Firestore rules validation
+      timestamp: new Date().toISOString(),
       isLive,
       weight: 1,
     };
@@ -406,11 +552,17 @@ function AppContent() {
         </div>
         
         <div className="flex gap-2 pointer-events-auto">
+          {/* Safe Spaces toggle button */}
           <button 
             onClick={() => setShowSafeSpaces(!showSafeSpaces)}
-            className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-xl ${showSafeSpaces ? 'bg-safe text-white scale-105' : 'glass text-slate-600'}`}
+            className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-xl relative ${showSafeSpaces ? 'bg-safe text-white scale-105' : 'glass text-slate-600'}`}
+            title={showSafeSpaces ? 'Ascunde spații sigure' : 'Arată spații sigure'}
           >
             <Shield size={20} />
+            {/* Loading spinner */}
+            {safeSpacesLoading && (
+              <div className="absolute -top-1 -right-1 w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin bg-safe" />
+            )}
           </button>
         </div>
       </header>

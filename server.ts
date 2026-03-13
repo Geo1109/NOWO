@@ -2,6 +2,9 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { config } from "dotenv";
+config({ path: ".env.local" });
+config({ path: ".env" });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,20 +15,16 @@ async function startServer() {
 
   app.use(express.json());
 
-  // --- API Routes ---
-  
-  // Health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Example proxy for Nominatim (Search)
   app.get("/api/search", async (req, res) => {
     const { q, lat, lon, viewbox } = req.query;
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q as string)}&limit=5&lat=${lat}&lon=${lon}&viewbox=${viewbox}&bounded=1&email=stangeorgian38@gmail.com`;
       const response = await fetch(url, {
-        headers: { 'Accept': 'application/json', 'User-Agent': 'SafeWalk-App' }
+        headers: { "Accept": "application/json", "User-Agent": "SafeWalk-App" },
       });
       const data = await response.json();
       res.json(data);
@@ -35,7 +34,6 @@ async function startServer() {
     }
   });
 
-  // Example proxy for OSRM (Routing)
   app.get("/api/route", async (req, res) => {
     const { points, radiuses } = req.query;
     try {
@@ -49,31 +47,119 @@ async function startServer() {
     }
   });
 
-  // Example proxy for Overpass (Safe Spaces)
+  // Google Places API (New) — real open_now data
   app.get("/api/safe-spaces", async (req, res) => {
-    const { lat, lon } = req.query;
-    const query = `[out:json];node["amenity"~"pharmacy|hospital|police"](around:3000,${lat},${lon});out;`;
-    const endpoints = [
-      `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
-      `https://lz4.overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
-      `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(query)}`
+    const { lat, lon, radius = "800" } = req.query;
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+
+    if (!GOOGLE_KEY) {
+      res.status(500).json({ error: "GOOGLE_PLACES_API_KEY not set" });
+      return;
+    }
+
+    // Types we care about for safety: pharmacies, hospitals, police, supermarkets,
+    // convenience stores, cafes, bars, restaurants (places with people = safer)
+    const includedTypes = [
+      "pharmacy", "hospital", "police", "supermarket", "convenience_store",
+      "cafe", "bar", "restaurant", "doctor", "drugstore"
     ];
 
-    for (const url of endpoints) {
-      try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-        if (!response.ok) continue;
-        const data = await response.json();
-        res.json(data);
+    try {
+      const response = await fetch(
+        "https://places.googleapis.com/v1/places:searchNearby",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_KEY,
+            // Only request fields we need (reduces cost)
+            "X-Goog-FieldMask": [
+              "places.id",
+              "places.displayName",
+              "places.location",
+              "places.types",
+              "places.primaryType",
+              "places.currentOpeningHours",
+              "places.regularOpeningHours",
+              "places.formattedAddress",
+              "places.nationalPhoneNumber",
+              "places.websiteUri",
+              "places.businessStatus",
+            ].join(","),
+          },
+          body: JSON.stringify({
+            includedTypes,
+            maxResultCount: 20,
+            locationRestriction: {
+              circle: {
+                center: { latitude: parseFloat(lat as string), longitude: parseFloat(lon as string) },
+                radius: parseFloat(radius as string),
+              },
+            },
+          }),
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error("Google Places error:", err);
+        res.status(500).json({ error: "Google Places API failed", detail: err });
         return;
-      } catch (e) {
-        console.warn(`Failed to fetch from ${url}:`, e);
       }
+
+      const data = await response.json();
+
+      // Normalize to our SafeSpace shape and filter: only OPERATIONAL + open now
+      const places = (data.places || [])
+        .filter((p: any) => {
+          if (p.businessStatus && p.businessStatus !== "OPERATIONAL") return false;
+          // If we have currentOpeningHours, use it; otherwise include (no data = show it)
+          if (p.currentOpeningHours) return p.currentOpeningHours.openNow === true;
+          return true;
+        })
+        .map((p: any) => {
+          const types: string[] = p.types || [];
+          const primaryType = p.primaryType || types[0] || "other";
+
+          // Map Google type → our internal type
+          const typeMap: Record<string, string> = {
+            pharmacy: "pharmacy",
+            drugstore: "pharmacy",
+            hospital: "hospital",
+            doctor: "doctors",
+            police: "police",
+            supermarket: "supermarket",
+            convenience_store: "convenience",
+            cafe: "convenience",
+            bar: "convenience",
+            restaurant: "convenience",
+          };
+          const ourType = typeMap[primaryType] || typeMap[types.find((t: string) => typeMap[t]) || ""] || "convenience";
+
+          return {
+            id: p.id,
+            name: p.displayName?.text || "Unknown",
+            type: ourType,
+            lat: p.location?.latitude,
+            lng: p.location?.longitude,
+            details: p.formattedAddress || "",
+            address: p.formattedAddress || "",
+            phone: p.nationalPhoneNumber || "",
+            openingHours: p.regularOpeningHours?.weekdayDescriptions?.join(" | ") || "",
+            openNow: true, // already filtered above
+            website: p.websiteUri || "",
+          };
+        })
+        .filter((p: any) => p.lat && p.lng); // safety check
+
+      res.json({ places });
+    } catch (e) {
+      console.error("Google Places fetch error:", e);
+      res.status(500).json({ error: "Failed to fetch safe spaces" });
     }
-    res.status(500).json({ error: "All safe spaces endpoints failed" });
   });
 
-  // --- Vite Middleware ---
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

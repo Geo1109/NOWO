@@ -31,9 +31,16 @@ export interface SafeSpace {
   lat: number;
   lng: number;
   name: string;
-  type: 'pharmacy' | 'store' | 'hospital' | 'police';
-  openNow: boolean;
+  type: 'pharmacy' | 'hospital' | 'police' | 'supermarket' | 'convenience' | 'doctors' | 'clinic' | 'store';
   details: string;
+  // Fields populated from real Overpass data (optional)
+  address?: string;
+  phone?: string;
+  openingHours?: string;
+  website?: string;
+  distance?: number;
+  // Legacy field (kept for backward compat with mock data)
+  openNow?: boolean;
 }
 
 export interface UserSettings {

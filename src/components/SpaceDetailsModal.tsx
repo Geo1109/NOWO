@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { X, ShoppingBag, Stethoscope, Shield, Building2, Navigation } from 'lucide-react';
+import { Navigation, Phone, Clock, MapPin, Globe, ShoppingCart, Shield, Stethoscope, Store } from 'lucide-react';
 import { SafeSpace } from '../types';
 
 interface SpaceDetailsModalProps {
@@ -10,52 +10,245 @@ interface SpaceDetailsModalProps {
   t: any;
 }
 
-export const SpaceDetailsModal = ({ space, onClose, onNavigate, t }: SpaceDetailsModalProps) => {
-  const iconMap: any = {
-    pharmacy: <ShoppingBag size={24} />,
-    store: <ShoppingBag size={24} />,
-    hospital: <Stethoscope size={24} />,
-    police: <Shield size={24} />
+const TYPE_CONFIG: Record<string, { Icon: React.ElementType; color: string; label: string }> = {
+  pharmacy: { Icon: Stethoscope, color: '#10b981', label: 'Farmacie' },
+  hospital: { Icon: Stethoscope, color: '#3b82f6', label: 'Spital' },
+  police: { Icon: Shield, color: '#6366f1', label: 'Poliție' },
+  supermarket: { Icon: ShoppingCart, color: '#f97316', label: 'Supermarket' },
+  convenience: { Icon: Store, color: '#f59e0b', label: 'Magazin' },
+  doctors: { Icon: Stethoscope, color: '#14b8a6', label: 'Cabinet Medical' },
+  clinic: { Icon: Stethoscope, color: '#06b6d4', label: 'Clinică' },
+};
+
+function formatDist(m?: number) {
+  if (!m) return null;
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+
+function convertTo24h(time: string) {
+  const match = time.match(/(\d+):(\d+)\s?(AM|PM)/i);
+  if (!match) return time;
+
+  let hour = parseInt(match[1]);
+  const minute = match[2];
+  const period = match[3].toUpperCase();
+
+  if (period === "PM" && hour !== 12) hour += 12;
+  if (period === "AM" && hour === 12) hour = 0;
+
+  return `${hour.toString().padStart(2, "0")}:${minute}`;
+}
+
+function parseOpeningHours(hours?: string) {
+  if (!hours) return [];
+
+  const dayMap: Record<string, string> = {
+    Monday: 'Luni',
+    Tuesday: 'Marți',
+    Wednesday: 'Miercuri',
+    Thursday: 'Joi',
+    Friday: 'Vineri',
+    Saturday: 'Sâmbătă',
+    Sunday: 'Duminică'
   };
 
+  return hours.split('|').map(part => {
+    const idx = part.indexOf(':');
+
+    const day = part.slice(0, idx).trim();
+    const time = part.slice(idx + 1).trim();
+
+    if (time.toLowerCase().includes("open 24")) {
+      return {
+        day: dayMap[day] || day,
+        hours: "Deschis 24h"
+      };
+    }
+
+    const [start, end] = time.split('–');
+
+    const start24 = convertTo24h(start.trim());
+    const end24 = convertTo24h(end.trim());
+
+    return {
+      day: dayMap[day] || day,
+      hours: `${start24} – ${end24}`
+    };
+  });
+}
+export const SpaceDetailsModal = ({ space, onClose, onNavigate }: SpaceDetailsModalProps) => {
+  const cfg = TYPE_CONFIG[space.type] || { Icon: Shield, color: '#64748b', label: 'Spațiu Sigur' };
+  const { Icon } = cfg;
+
+  const ex = space as any;
+  const dist = formatDist(ex.distance);
+  const schedule = parseOpeningHours(ex.openingHours);
+
+  const today = new Date().getDay();
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ y: '100%' }}
       animate={{ y: 0 }}
       exit={{ y: '100%' }}
-      className="fixed bottom-0 left-0 right-0 z-[80] glass rounded-t-[40px] p-10 pb-14 shadow-2xl border-t-2 border-emerald-100"
+      transition={{ type: 'spring', damping: 30, stiffness: 340 }}
+      className="fixed bottom-0 left-0 right-0 z-[80] bg-white overflow-hidden"
+      style={{ borderRadius: '24px 24px 0 0', boxShadow: '0 -4px 40px rgba(0,0,0,0.13)' }}
     >
-      <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mb-10" />
-      
-      <div className="flex items-start justify-between mb-8">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-            {iconMap[space.type] || <Building2 size={24} />}
+      {/* HEADER */}
+      <div style={{ background: cfg.color }} className="px-6 pt-5 pb-6">
+
+        {/* CLOSE HANDLE */}
+        <div className="flex justify-center mb-5">
+          <button
+            onClick={onClose}
+            className="w-10 h-1 bg-white/40 rounded-full"
+          />
+        </div>
+
+        {/* ICON + NAME */}
+        <div className="flex items-center gap-3">
+          <div
+            className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0"
+            style={{ background: 'rgba(255,255,255,0.2)' }}
+          >
+            <Icon size={22} className="text-white" />
           </div>
-          <div>
-            <h2 className="text-2xl font-black text-slate-900 tracking-tight">{space.name}</h2>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] font-black uppercase tracking-widest">{t.openNow}</span>
-              <p className="text-xs text-slate-400 font-bold">{t.distance}</p>
-            </div>
+
+          <div className="flex-1 min-w-0">
+            <p className="text-white/60 text-[11px] font-medium uppercase tracking-widest mb-0.5">
+              {cfg.label}
+            </p>
+
+            <h2
+              className="text-white leading-snug"
+              style={{ fontSize: '18px', fontWeight: 600 }}
+            >
+              {space.name}
+            </h2>
           </div>
         </div>
-        <button onClick={onClose} className="w-12 h-12 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
-          <X size={24} />
-        </button>
+
+        {/* STATUS */}
+        <div className="flex gap-2 mt-4 flex-wrap">
+          <Pill>
+            <span className="w-1.5 h-1.5 bg-white rounded-full" />
+            Deschis acum
+          </Pill>
+
+          {dist && (
+            <Pill>
+              <Navigation size={10} />
+              {dist}
+            </Pill>
+          )}
+        </div>
       </div>
 
-      <p className="text-slate-500 text-sm font-bold mb-10 leading-relaxed">
-        {space.details}. This location is verified as a Safe Space. You can seek assistance here 24/7.
-      </p>
+      {/* INFO */}
+      <div className="px-6 py-4 flex flex-col gap-3">
 
-      <button 
-        onClick={onNavigate}
-        className="w-full h-16 bg-emerald-600 text-white rounded-2xl font-black text-lg flex items-center justify-center gap-3 active:scale-95 transition-all shadow-xl shadow-emerald-100"
-      >
-        <Navigation size={24} />
-        Navigate to Safe Space
-      </button>
+        {ex.address && (
+          <InfoRow icon={<MapPin size={15} />} color={cfg.color}>
+            {ex.address}
+          </InfoRow>
+        )}
+
+        {schedule.length > 0 && (
+          <InfoRow icon={<Clock size={15} />} color={cfg.color}>
+            <div className="flex flex-col gap-1 text-sm w-full">
+              {schedule.map((d: any, i: number) => {
+                const isToday = i === (today === 0 ? 6 : today - 1);
+
+                return (
+                  <div key={i} className="flex justify-between">
+                    <span className={isToday ? "font-semibold text-black" : "text-slate-500"}>
+                      {d.day}
+                    </span>
+                    <span className={isToday ? "font-semibold" : "font-medium"}>
+                      {d.hours}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </InfoRow>
+        )}
+
+        {ex.phone && (
+          <InfoRow icon={<Phone size={15} />} color={cfg.color}>
+            <a
+              href={`tel:${ex.phone}`}
+              style={{ color: cfg.color }}
+              className="font-semibold"
+            >
+              {ex.phone}
+            </a>
+          </InfoRow>
+        )}
+
+        {ex.website && (
+          <InfoRow icon={<Globe size={15} />} color={cfg.color}>
+            <a
+              href={ex.website}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: cfg.color }}
+              className="font-semibold truncate block"
+            >
+              {ex.website.replace(/^https?:\/\//, '').split('/')[0]}
+            </a>
+          </InfoRow>
+        )}
+      </div>
+
+      {/* NAVIGATE BUTTON */}
+      <div className="px-6 pb-10 pt-1">
+        <button
+          onClick={onNavigate}
+          style={{ background: cfg.color }}
+          className="w-full h-14 rounded-2xl text-white font-bold text-base flex items-center justify-center gap-2.5 active:scale-95 transition-transform"
+        >
+          <Navigation size={19} />
+          Navighează aici
+        </button>
+      </div>
     </motion.div>
   );
 };
+
+function Pill({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      className="px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 text-white"
+      style={{ background: 'rgba(255,255,255,0.22)' }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function InfoRow({
+  icon,
+  color,
+  children
+}: {
+  icon: React.ReactNode;
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div
+        className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+        style={{ color, background: color + '15' }}
+      >
+        {icon}
+      </div>
+
+      <div className="text-sm text-slate-600 pt-1.5 leading-snug flex-1 min-w-0">
+        {children}
+      </div>
+    </div>
+  );
+}
