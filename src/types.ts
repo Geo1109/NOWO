@@ -1,3 +1,18 @@
+export interface RouteInfo {
+  distance: number;
+  duration: number;
+  geometry: any;
+  safetyScore: number;
+  type: 'safe' | 'fastest';
+  steps: any[];
+}
+
+export interface SearchResult {
+  display_name: string;
+  lat: string;
+  lon: string;
+}
+
 export type Language = 'en' | 'ro';
 
 export interface Report {
