@@ -481,11 +481,15 @@ function AppContent() {
     setActiveRoute(route);
   };
 
-  const startNavigation = () => {
-    if (!activeRoute) return;
+  const startNavigation = (route?: RouteInfo) => {
+    const routeToUse = route ?? activeRoute;
+    if (!routeToUse) return;
+    
+    setActiveRoute(routeToUse);
     setIsNavigating(true);
-    setActiveTab('home');
-    mapRef.current.setView(userLocation, 18);
+    // Note: We don't setActiveTab('home') here because the 
+    // RoutePlanner's sheet or overlay manages its own visibility/transition
+    mapRef.current?.setView(userLocation, 18);
   };
 
   const stopNavigation = () => {
@@ -495,6 +499,7 @@ function AppContent() {
       mapRef.current.removeLayer(routeLayerRef.current);
     }
   };
+
 
   const handleNavigateToSafeSpace = (space: SafeSpace) => {
     setSelectedSpace(null);
@@ -508,7 +513,7 @@ function AppContent() {
 
   return (
     <div className="relative w-full h-screen overflow-hidden flex flex-col bg-slate-50">
-      {/* Proximity Alert */}
+      {/* Proximity Alert & Header logic remains same */}
       <AnimatePresence>
         {proximityAlert && (
           <motion.div 
@@ -588,9 +593,8 @@ function AppContent() {
               activeTab={activeTab} 
               setActiveTab={(tab) => {
                 if (tab === 'report') { setShowReportModal(true); return; }
-                // alerts tab requires auth
                 if (tab === 'alerts' && !currentUser) { setShowAuth(true); return; }
-                if (timerActive && tab !== 'home') return; // stay on map when timer running
+                if (timerActive && tab !== 'home') return; 
                 setActiveTab(tab);
               }} 
               t={t} 
@@ -598,17 +602,18 @@ function AppContent() {
           </motion.div>
         )}
 
+        {/* --- UPDATED ROUTE PLANNER SCREEN INVOCATION --- */}
         {activeTab === 'route' && (
-          <RoutePlannerScreen 
-            onClose={() => {
-              setActiveTab('home');
-              setInitialDestination(null);
-            }} 
-            t={t} 
+          <RoutePlannerScreen
+            onClose={() => { 
+              setActiveTab('home'); 
+              setInitialDestination(null); 
+            }}
+            t={t}
             userLocation={userLocation}
             reports={reports}
             onDrawRoute={drawRoute}
-            onStartNav={startNavigation}
+            onStartNav={startNavigation} // Now uses the enhanced version
             initialDest={initialDestination}
           />
         )}
