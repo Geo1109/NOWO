@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle, Shield, X, Navigation2, StopCircle } from 'lucide-react';
 import { Language, Report, SafeSpace, RouteInfo, SearchResult } from './types';
 import { translations } from './translations';
-import { auth, db, OperationType, handleFirestoreError } from "./firebase";
+import { auth, db, OperationType, handleFirestoreError, onForegroundMessage } from "./firebase";
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   collection, onSnapshot, updateDoc, doc, setDoc, query, where, Timestamp
@@ -88,9 +88,7 @@ function AppContent() {
   const [lang] = useState<Language>(navigator.language.startsWith('ro') ? 'ro' : 'en');
   const t = translations[lang];
 
-  // activeTab: 'home' | 'report' | 'alerts' | 'settings'
-  // 'route' tab is REMOVED — route planner is always on home screen
-  const [activeTab, setActiveTab] = useState('home');
+  const [activeTab, setActiveTab]               = useState('home');
   const [showReportModal, setShowReportModal]   = useState(false);
   const [showSafeSpaces, setShowSafeSpaces]     = useState(false);
   const [selectedZone, setSelectedZone]         = useState<Report | null>(null);
@@ -109,10 +107,25 @@ function AppContent() {
   const [currentUser, setCurrentUser]           = useState(auth.currentUser);
   const [sheetSnap, setSheetSnap]               = useState<'SEARCH' | 'ROUTES' | 'FULL'>('SEARCH');
 
+  // Auth state
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, user => {
       setCurrentUser(user);
       if (user) setShowAuth(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // FCM foreground messages — show banner in app
+  useEffect(() => {
+    const unsub = onForegroundMessage((payload) => {
+      const { body } = payload.notification || {};
+      const type = payload.data?.type;
+      if (type === 'emergency_alert') {
+        setProximityAlert(`🚨 ${body || 'Alertă de urgență primită!'}`);
+      } else if (type === 'danger_zone') {
+        setProximityAlert(`⚠️ ${body || 'Zonă periculoasă raportată în apropiere!'}`);
+      }
     });
     return () => unsub();
   }, []);
@@ -205,6 +218,7 @@ function AppContent() {
         const { latitude: lat, longitude: lng } = pos.coords;
         const newPos: [number, number] = [lat, lng];
         setUserLocation(newPos);
+
         if (userMarkerRef.current) {
           userMarkerRef.current.setLatLng(newPos);
         } else {
@@ -212,7 +226,15 @@ function AppContent() {
             radius: 10, fillColor: COLORS.primary, fillOpacity: 1, color: 'white', weight: 3,
           }).addTo(mapRef.current);
         }
+
         if (isNavigating) mapRef.current.panTo(newPos);
+
+        // Save location to Firestore for Cloud Function proximity notifications
+        const cu = auth.currentUser;
+        if (cu) {
+          updateDoc(doc(db, 'users', cu.uid), { lastLat: lat, lastLng: lng }).catch(() => {});
+        }
+
         reports.forEach(report => {
           const dist = L.latLng(newPos).distanceTo(L.latLng(report.lat, report.lng));
           if (dist < 100) {
@@ -220,6 +242,7 @@ function AppContent() {
             if (proximityAlert !== msg) setProximityAlert(msg);
           }
         });
+
         if (showSafeSpaces) fetchSafeSpaces(lat, lng);
       }, err => console.error(err), { enableHighAccuracy: true });
     }
@@ -297,11 +320,10 @@ function AppContent() {
   const handleNavigateToSafeSpace = (space: SafeSpace) => {
     setSelectedSpace(null);
     setInitialDestination({ display_name: space.name, lat: space.lat.toString(), lon: space.lng.toString() });
-    // Just set the destination — RoutePlannerScreen will auto-compute on home tab
     setActiveTab('home');
   };
 
-  // ── Tab navigation handler ───────────────────────────────────────────────
+  // ── Tab navigation ───────────────────────────────────────────────────────
   const handleTabChange = (tab: string) => {
     if (tab === 'report')  { setShowReportModal(true); return; }
     if (tab === 'alerts' && !currentUser) { setShowAuth(true); return; }
@@ -313,7 +335,7 @@ function AppContent() {
   return (
     <div className="relative w-full h-screen overflow-hidden flex flex-col bg-slate-50">
 
-      {/* Proximity alert */}
+      {/* Proximity alert banner */}
       <AnimatePresence>
         {proximityAlert && (
           <motion.div
@@ -353,20 +375,17 @@ function AppContent() {
       {/* Map */}
       <div ref={mapContainerRef} className="flex-1 w-full z-0" />
 
-      {/* ── Overlays ── */}
+      {/* Overlays */}
       <AnimatePresence>
 
-        {/* HOME TAB — BottomNav + EmergencyButton + RoutePlanner sheet */}
         {activeTab === 'home' && (
           <motion.div key="home-overlay">
-            {/* Emergency button and bottom nav only when not navigating and sheet not full */}
             {!isNavigating && sheetSnap !== 'FULL' && (
               <>
                 <EmergencyButton t={t} userLocation={userLocation} onTimerActive={setTimerActive} />
                 <BottomNav activeTab={activeTab} setActiveTab={handleTabChange} t={t} />
               </>
             )}
-            {/* Route planner — always on home, hides when navigating collapses it */}
             <RoutePlannerScreen
               onClose={() => setInitialDestination(null)}
               t={t}
@@ -383,7 +402,6 @@ function AppContent() {
           </motion.div>
         )}
 
-        {/* ALERTS TAB — SettingsScreen (Cont: notifications + emergency contacts) */}
         {activeTab === 'alerts' && (
           <SettingsScreen
             onClose={() => setActiveTab('home')}
@@ -392,12 +410,10 @@ function AppContent() {
           />
         )}
 
-        {/* SETTINGS TAB — MenuScreen (About, Privacy — opened from SettingsScreen) */}
         {activeTab === 'settings' && (
           <MenuScreen onClose={() => setActiveTab('alerts')} t={t} />
         )}
 
-        {/* AUTH */}
         {showAuth && (
           <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[150]">
             <AuthScreen
@@ -407,7 +423,6 @@ function AppContent() {
           </motion.div>
         )}
 
-        {/* REPORT MODAL */}
         {showReportModal && (
           <ReportModal
             onClose={() => { setShowReportModal(false); setReportLocation(null); }}
@@ -430,7 +445,6 @@ function AppContent() {
           />
         )}
 
-        {/* ZONE DETAILS */}
         {selectedZone && (
           <ZoneDetailsModal
             zone={selectedZone}
@@ -447,7 +461,6 @@ function AppContent() {
           />
         )}
 
-        {/* SPACE DETAILS */}
         {selectedSpace && (
           <SpaceDetailsModal
             space={selectedSpace}

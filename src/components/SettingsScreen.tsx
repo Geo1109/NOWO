@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronLeft, User, Search, Trash2, LogOut, Bell, UserCheck, UserPlus, AlertTriangle, Info } from 'lucide-react';
+import { ChevronLeft, User, Search, Trash2, LogOut, Bell, BellOff, UserCheck, UserPlus, AlertTriangle } from 'lucide-react';
 import { auth, db, requestNotificationPermission } from '../firebase';
 import { signOut } from 'firebase/auth';
 import { doc, getDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from 'firebase/firestore';
@@ -8,7 +8,7 @@ import { doc, getDoc, updateDoc, arrayUnion, arrayRemove, collection, query, whe
 interface SettingsScreenProps {
   onClose: () => void;
   t: any;
-  onOpenMenu?: () => void; // opens MenuScreen (About, Privacy)
+  onOpenMenu?: () => void;
 }
 
 interface Contact {
@@ -30,19 +30,31 @@ const PRIMARY = '#3b82f6';
 export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) => {
   const user = auth.currentUser;
 
-  const [alertNearMe,   setAlertNearMe]   = useState(() => localStorage.getItem('alertNearMe')   === 'true');
+  const [alertNearMe, setAlertNearMe] = useState(() => localStorage.getItem('alertNearMe') === 'true');
   const [notifyFlagged, setNotifyFlagged] = useState(() => localStorage.getItem('notifyFlagged') === 'true');
   const [notifPermission, setNotifPermission] = useState(Notification.permission);
 
-  const [contacts,       setContacts]       = useState<Contact[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [incomingAlerts, setIncomingAlerts] = useState<IncomingAlert[]>([]);
-  const [searchEmail,    setSearchEmail]    = useState('');
-  const [searchResult,   setSearchResult]   = useState<Contact | null>(null);
-  const [searchLoading,  setSearchLoading]  = useState(false);
-  const [searchError,    setSearchError]    = useState('');
+  const [searchEmail, setSearchEmail] = useState('');
+  const [searchResult, setSearchResult] = useState<Contact | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
 
-  useEffect(() => { localStorage.setItem('alertNearMe',   String(alertNearMe));   }, [alertNearMe]);
-  useEffect(() => { localStorage.setItem('notifyFlagged', String(notifyFlagged)); }, [notifyFlagged]);
+  useEffect(() => {
+    localStorage.setItem('alertNearMe', String(alertNearMe));
+    // Sync to Firestore so Cloud Function knows user's preference
+    if (user) {
+      updateDoc(doc(db, 'users', user.uid), { alertNearMe }).catch(() => {});
+    }
+  }, [alertNearMe]);
+
+  useEffect(() => {
+    localStorage.setItem('notifyFlagged', String(notifyFlagged));
+    if (user) {
+      updateDoc(doc(db, 'users', user.uid), { notifyFlagged }).catch(() => {});
+    }
+  }, [notifyFlagged]);
 
   useEffect(() => {
     if (!user) return;
@@ -57,15 +69,20 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
   const enableNotifications = async () => {
     const token = await requestNotificationPermission();
     setNotifPermission(Notification.permission);
-    if (token && user) await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+    if (token && user) {
+      await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+    }
   };
 
   const searchUser = async () => {
     if (!searchEmail.trim()) return;
-    setSearchLoading(true); setSearchError(''); setSearchResult(null);
+    setSearchLoading(true);
+    setSearchError('');
+    setSearchResult(null);
     try {
       if (searchEmail.toLowerCase() === user?.email?.toLowerCase()) {
-        setSearchError('Nu te poți adăuga pe tine însuți.'); return;
+        setSearchError('Nu te poți adăuga pe tine însuți.');
+        return;
       }
       const q = query(collection(db, 'users'), where('email', '==', searchEmail.trim().toLowerCase()));
       const snap = await getDocs(q);
@@ -73,8 +90,11 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
         setSearchError('Nu există niciun utilizator cu acest email.');
       } else {
         const data = snap.docs[0].data();
-        if (contacts.some(c => c.uid === data.uid)) setSearchError('Acest contact e deja adăugat.');
-        else setSearchResult({ uid: data.uid, name: data.name, email: data.email });
+        if (contacts.some(c => c.uid === data.uid)) {
+          setSearchError('Acest contact e deja adăugat.');
+        } else {
+          setSearchResult({ uid: data.uid, name: data.name, email: data.email });
+        }
       }
     } catch { setSearchError('Eroare la căutare.'); }
     finally { setSearchLoading(false); }
@@ -84,7 +104,8 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
     if (!user) return;
     await updateDoc(doc(db, 'users', user.uid), { emergencyContacts: arrayUnion(contact) });
     setContacts(prev => [...prev, contact]);
-    setSearchEmail(''); setSearchResult(null);
+    setSearchEmail('');
+    setSearchResult(null);
   };
 
   const removeContact = async (contact: Contact) => {
@@ -105,7 +126,9 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
 
   return (
     <motion.div
-      initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
       transition={{ type: 'spring', damping: 28, stiffness: 280 }}
       className="fixed inset-0 z-[60] bg-white flex flex-col"
     >
@@ -116,7 +139,7 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
             <ChevronLeft size={20} className="text-slate-600" />
           </button>
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Cont & Setări</h2>
+            <h2 className="text-lg font-bold text-slate-900">Setări & Alerte</h2>
             {user && <p className="text-xs text-slate-400">{user.displayName} · {user.email}</p>}
           </div>
         </div>
@@ -125,7 +148,8 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
             onClick={async () => { await signOut(auth); onClose(); }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-500 bg-rose-50"
           >
-            <LogOut size={14} /> Ieși
+            <LogOut size={14} />
+            Ieși
           </button>
         )}
       </div>
@@ -156,13 +180,15 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
           </Section>
         )}
 
-        {/* Notificări */}
+        {/* Notificări push */}
         <Section title="Notificări">
           {notifPermission !== 'granted' && (
-            <button onClick={enableNotifications}
+            <button
+              onClick={enableNotifications}
               className="w-full p-4 rounded-2xl flex items-center gap-3 text-left transition-all active:scale-95"
-              style={{ background: `${PRIMARY}10`, border: `1.5px solid ${PRIMARY}30` }}>
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: PRIMARY }}>
+              style={{ background: `${PRIMARY}10`, border: `1.5px solid ${PRIMARY}30` }}
+            >
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: PRIMARY, }}>
                 <Bell size={16} className="text-white" />
               </div>
               <div>
@@ -171,8 +197,21 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
               </div>
             </button>
           )}
-          <Toggle label={t.alertNearMe}    sublabel="Rază: 500m"                      value={alertNearMe}   onChange={setAlertNearMe}   primary={PRIMARY} />
-          <Toggle label={t.notifyFlagged}  sublabel="Când intri într-o zonă marcată"   value={notifyFlagged} onChange={setNotifyFlagged} primary={PRIMARY} />
+
+          <Toggle
+            label="Notifică contactele de urgență"
+            sublabel="Contactele tale primesc push notification când trimiți o alertă"
+            value={alertNearMe}
+            onChange={setAlertNearMe}
+            primary={PRIMARY}
+          />
+          <Toggle
+            label="Alertă la zonă periculoasă"
+            sublabel="Primești notificare când intri într-o zonă raportată (rază 500m)"
+            value={notifyFlagged}
+            onChange={setNotifyFlagged}
+            primary={PRIMARY}
+          />
         </Section>
 
         {/* Contacte urgență */}
@@ -186,16 +225,22 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
               <div className="flex gap-2">
                 <div className="flex-1 flex items-center gap-2 px-4 h-12 rounded-2xl bg-white" style={{ border: '1.5px solid #e2e8f0' }}>
                   <Search size={15} className="text-slate-400 shrink-0" />
-                  <input type="email" inputMode="email" placeholder="Email utilizator SafeWalk..."
+                  <input
+                    type="email"
+                    inputMode="email"
+                    placeholder="Email utilizator SafeWalk..."
                     value={searchEmail}
                     onChange={e => { setSearchEmail(e.target.value); setSearchError(''); setSearchResult(null); }}
                     onKeyDown={e => e.key === 'Enter' && searchUser()}
                     className="flex-1 bg-transparent text-sm text-slate-800 focus:outline-none placeholder:text-slate-400"
                   />
                 </div>
-                <button onClick={searchUser} disabled={searchLoading || !searchEmail.trim()}
+                <button
+                  onClick={searchUser}
+                  disabled={searchLoading || !searchEmail.trim()}
                   className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shrink-0"
-                  style={{ background: searchEmail.trim() ? PRIMARY : '#e2e8f0' }}>
+                  style={{ background: searchEmail.trim() ? PRIMARY : '#e2e8f0' }}
+                >
                   {searchLoading
                     ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     : <Search size={15} style={{ color: searchEmail.trim() ? 'white' : '#94a3b8' }} />}
@@ -206,9 +251,13 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
 
               <AnimatePresence>
                 {searchResult && (
-                  <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
                     className="flex items-center justify-between p-4 rounded-2xl"
-                    style={{ background: '#eff6ff', border: `1.5px solid ${PRIMARY}40` }}>
+                    style={{ background: '#eff6ff', border: `1.5px solid ${PRIMARY}40` }}
+                  >
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${PRIMARY}20` }}>
                         <User size={16} style={{ color: PRIMARY }} />
@@ -218,9 +267,11 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
                         <p className="text-xs text-slate-400">{searchResult.email}</p>
                       </div>
                     </div>
-                    <button onClick={() => addContact(searchResult!)}
+                    <button
+                      onClick={() => addContact(searchResult!)}
                       className="w-9 h-9 rounded-xl flex items-center justify-center text-white"
-                      style={{ background: PRIMARY }}>
+                      style={{ background: PRIMARY }}
+                    >
                       <UserPlus size={16} />
                     </button>
                   </motion.div>
@@ -253,25 +304,6 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
             </>
           )}
         </Section>
-
-        {/* Aplicație — opens MenuScreen */}
-        {onOpenMenu && (
-          <Section title="Aplicație">
-            <button onClick={onOpenMenu}
-              className="w-full p-4 rounded-2xl flex items-center gap-3 text-left"
-              style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0' }}>
-              <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-                <Info size={16} className="text-primary" />
-              </div>
-              <div>
-                <p className="text-sm font-bold text-slate-800">Despre & Confidențialitate</p>
-                <p className="text-xs text-slate-400">Versiune, politică de confidențialitate</p>
-              </div>
-              <ChevronLeft size={16} className="text-slate-300 ml-auto rotate-180" />
-            </button>
-          </Section>
-        )}
-
       </div>
     </motion.div>
   );
@@ -295,9 +327,11 @@ function Toggle({ label, sublabel, value, onChange, primary }: {
         <p className="text-sm font-semibold text-slate-800">{label}</p>
         {sublabel && <p className="text-xs text-slate-400 mt-0.5">{sublabel}</p>}
       </div>
-      <button onClick={() => onChange(!value)}
+      <button
+        onClick={() => onChange(!value)}
         className="w-12 h-7 rounded-full relative transition-colors duration-200 shrink-0"
-        style={{ background: value ? primary : '#e2e8f0' }}>
+        style={{ background: value ? primary : '#e2e8f0' }}
+      >
         <div className="absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-all duration-200"
           style={{ left: value ? 'calc(100% - 26px)' : '2px' }} />
       </button>
