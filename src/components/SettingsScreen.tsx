@@ -4,6 +4,9 @@ import { ChevronLeft, User, Search, Trash2, LogOut, Bell, BellOff, UserCheck, Us
 import { auth, db, requestNotificationPermission } from '../firebase';
 import { signOut } from 'firebase/auth';
 import { doc, getDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
+import { Preferences } from '@capacitor/preferences';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 interface SettingsScreenProps {
   onClose: () => void;
@@ -27,35 +30,99 @@ interface IncomingAlert {
 
 const PRIMARY = '#3b82f6';
 
+// ---------------------------------------------------------------------------
+// Preferences helpers — wraps @capacitor/preferences with a localStorage
+// fallback so the same code works on web without changes.
+// ---------------------------------------------------------------------------
+async function getPref(key: string): Promise<string | null> {
+  if (Capacitor.isNativePlatform()) {
+    const { value } = await Preferences.get({ key });
+    return value;
+  }
+  return localStorage.getItem(key);
+}
+
+async function setPref(key: string, value: string): Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    await Preferences.set({ key, value });
+  } else {
+    localStorage.setItem(key, value);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification permission helpers
+// ---------------------------------------------------------------------------
+type PermState = 'granted' | 'denied' | 'prompt';
+
+async function getNotifPermission(): Promise<PermState> {
+  if (Capacitor.isNativePlatform()) {
+    const { display } = await LocalNotifications.checkPermissions();
+    // Capacitor returns 'granted' | 'denied' | 'prompt' | 'prompt-with-rationale'
+    if (display === 'granted') return 'granted';
+    if (display === 'denied')  return 'denied';
+    return 'prompt';
+  }
+  // Web
+  return (Notification.permission ?? 'prompt') as PermState;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) => {
   const user = auth.currentUser;
 
-  const [alertNearMe, setAlertNearMe] = useState(() => localStorage.getItem('alertNearMe') === 'true');
-  const [notifyFlagged, setNotifyFlagged] = useState(() => localStorage.getItem('notifyFlagged') === 'true');
-  const [notifPermission, setNotifPermission] = useState(Notification.permission);
+  // Prefs are loaded asynchronously — start with safe defaults
+  const [alertNearMe, setAlertNearMe]   = useState(false);
+  const [notifyFlagged, setNotifyFlagged] = useState(false);
+  const [notifPermission, setNotifPermission] = useState<PermState>('prompt');
+  const [prefsLoaded, setPrefsLoaded]   = useState(false);
 
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contacts, setContacts]           = useState<Contact[]>([]);
   const [incomingAlerts, setIncomingAlerts] = useState<IncomingAlert[]>([]);
-  const [searchEmail, setSearchEmail] = useState('');
-  const [searchResult, setSearchResult] = useState<Contact | null>(null);
+  const [searchEmail, setSearchEmail]     = useState('');
+  const [searchResult, setSearchResult]   = useState<Contact | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState('');
+  const [searchError, setSearchError]     = useState('');
 
+  // ── Load persisted prefs on mount ────────────────────────────────────────
   useEffect(() => {
-    localStorage.setItem('alertNearMe', String(alertNearMe));
-    // Sync to Firestore so Cloud Function knows user's preference
+    const load = async () => {
+      const [alertVal, flaggedVal] = await Promise.all([
+        getPref('alertNearMe'),
+        getPref('notifyFlagged'),
+      ]);
+      setAlertNearMe(alertVal === 'true');
+      setNotifyFlagged(flaggedVal === 'true');
+      setPrefsLoaded(true);
+
+      // Check current notification permission
+      const perm = await getNotifPermission();
+      setNotifPermission(perm);
+    };
+    load();
+  }, []);
+
+  // ── Persist alertNearMe whenever it changes (after initial load) ─────────
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    setPref('alertNearMe', String(alertNearMe));
     if (user) {
       updateDoc(doc(db, 'users', user.uid), { alertNearMe }).catch(() => {});
     }
-  }, [alertNearMe]);
+  }, [alertNearMe, prefsLoaded]);
 
+  // ── Persist notifyFlagged whenever it changes (after initial load) ────────
   useEffect(() => {
-    localStorage.setItem('notifyFlagged', String(notifyFlagged));
+    if (!prefsLoaded) return;
+    setPref('notifyFlagged', String(notifyFlagged));
     if (user) {
       updateDoc(doc(db, 'users', user.uid), { notifyFlagged }).catch(() => {});
     }
-  }, [notifyFlagged]);
+  }, [notifyFlagged, prefsLoaded]);
 
+  // ── Load contacts + incoming alerts ──────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     getDoc(doc(db, 'users', user.uid)).then(snap => {
@@ -66,11 +133,28 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
     });
   }, [user]);
 
+  // ── Enable push notifications ─────────────────────────────────────────────
   const enableNotifications = async () => {
-    const token = await requestNotificationPermission();
-    setNotifPermission(Notification.permission);
-    if (token && user) {
-      await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+    if (Capacitor.isNativePlatform()) {
+      // Request native permission via LocalNotifications, then get FCM token
+      const { display } = await LocalNotifications.requestPermissions();
+      const granted = display === 'granted';
+      setNotifPermission(granted ? 'granted' : 'denied');
+
+      if (granted) {
+        // Also register for remote push (FCM token)
+        const token = await requestNotificationPermission();
+        if (token && user) {
+          await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+        }
+      }
+    } else {
+      // Web path
+      const token = await requestNotificationPermission();
+      setNotifPermission(Notification.permission as PermState);
+      if (token && user) {
+        await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+      }
     }
   };
 
@@ -188,7 +272,7 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
               className="w-full p-4 rounded-2xl flex items-center gap-3 text-left transition-all active:scale-95"
               style={{ background: `${PRIMARY}10`, border: `1.5px solid ${PRIMARY}30` }}
             >
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: PRIMARY, }}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: PRIMARY }}>
                 <Bell size={16} className="text-white" />
               </div>
               <div>

@@ -10,6 +10,11 @@ import {
   collection, onSnapshot, updateDoc, doc, setDoc, query, where, Timestamp
 } from "firebase/firestore";
 import { MOCK_SAFE_SPACES, COLORS } from './constants';
+import { API_URL } from './config/api';
+
+// Capacitor
+import { Capacitor } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
 
 // --- Components ---
 import { BottomNav } from './components/BottomNav';
@@ -22,6 +27,7 @@ import { ReportModal } from './components/ReportModal';
 import { ZoneDetailsModal } from './components/ZoneDetailsModal';
 import { SpaceDetailsModal } from './components/SpaceDetailsModal';
 import { AuthScreen } from './components/AuthScreen';
+
 
 // ---------------------------------------------------------------------------
 // Safe Space icon HTML
@@ -139,6 +145,8 @@ function AppContent() {
   const reportLocationMarkerRef = useRef<any>(null);
   const reportingActiveRef      = useRef(false);
   const lastSafeSpacesFetchRef  = useRef<string>('');
+  // Store Capacitor watch ID so we can clear it on unmount
+  const geoWatchIdRef           = useRef<string | null>(null);
 
   useEffect(() => { reportingActiveRef.current = showReportModal; }, [showReportModal]);
 
@@ -174,7 +182,7 @@ function AppContent() {
     lastSafeSpacesFetchRef.current = key;
     setSafeSpacesLoading(true);
     try {
-      const res = await fetch(`/api/safe-spaces?lat=${lat}&lon=${lon}`);
+      const res = await fetch(`${API_URL}/api/safe-spaces?lat=${lat}&lon=${lon}`);
       if (!res.ok) throw new Error('Backend error');
       const data = await res.json();
       const parsed: SafeSpace[] = (data.places || [])
@@ -193,6 +201,78 @@ function AppContent() {
     if (showSafeSpaces) fetchSafeSpaces(userLocation[0], userLocation[1]);
     else if (safeSpacesLayerRef.current) safeSpacesLayerRef.current.clearLayers();
   }, [showSafeSpaces]);
+
+  // ── Geolocation (Capacitor native on Android, browser API on web) ────────
+  const startGeolocationWatch = async (L: any) => {
+    const handlePosition = (lat: number, lng: number) => {
+      const newPos: [number, number] = [lat, lng];
+      setUserLocation(newPos);
+
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setLatLng(newPos);
+      } else {
+        userMarkerRef.current = L.circleMarker(newPos, {
+          radius: 10, fillColor: COLORS.primary, fillOpacity: 1, color: 'white', weight: 3,
+        }).addTo(mapRef.current);
+      }
+
+      if (isNavigating) mapRef.current.panTo(newPos);
+
+      // Save location to Firestore for Cloud Function proximity notifications
+      const cu = auth.currentUser;
+      if (cu) {
+        updateDoc(doc(db, 'users', cu.uid), { lastLat: lat, lastLng: lng }).catch(() => {});
+      }
+
+      reports.forEach(report => {
+        const dist = L.latLng(newPos).distanceTo(L.latLng(report.lat, report.lng));
+        if (dist < 100) {
+          const msg = `Atenție: Intri într-o zonă periculoasă (${report.categories.join(', ')})`;
+          if (proximityAlert !== msg) setProximityAlert(msg);
+        }
+      });
+
+      if (showSafeSpaces) fetchSafeSpaces(lat, lng);
+    };
+
+    if (Capacitor.isNativePlatform()) {
+      // ── Native Android path ──────────────────────────────────────────────
+      try {
+        // Request permission before watching
+        const { location } = await Geolocation.requestPermissions();
+        if (location !== 'granted') {
+          console.warn('Geolocation permission denied');
+          return;
+        }
+
+        // Get an immediate fix so the map centers quickly
+        const initial = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
+        handlePosition(initial.coords.latitude, initial.coords.longitude);
+
+        // Start watching
+        geoWatchIdRef.current = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 10000 },
+          (position, err) => {
+            if (err || !position) {
+              console.error('Geolocation watch error:', err);
+              return;
+            }
+            handlePosition(position.coords.latitude, position.coords.longitude);
+          }
+        );
+      } catch (e) {
+        console.error('Geolocation init error:', e);
+      }
+    } else {
+      // ── Web / browser path ───────────────────────────────────────────────
+      if (!navigator.geolocation) return;
+      navigator.geolocation.watchPosition(
+        pos => handlePosition(pos.coords.latitude, pos.coords.longitude),
+        err => console.error(err),
+        { enableHighAccuracy: true }
+      );
+    }
+  };
 
   // ── Map init ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -213,39 +293,16 @@ function AppContent() {
       if (reportingActiveRef.current) setReportLocation([e.latlng.lat, e.latlng.lng]);
     });
 
-    if (navigator.geolocation) {
-      navigator.geolocation.watchPosition(pos => {
-        const { latitude: lat, longitude: lng } = pos.coords;
-        const newPos: [number, number] = [lat, lng];
-        setUserLocation(newPos);
+    // Start geolocation (native-aware)
+    startGeolocationWatch(L);
 
-        if (userMarkerRef.current) {
-          userMarkerRef.current.setLatLng(newPos);
-        } else {
-          userMarkerRef.current = L.circleMarker(newPos, {
-            radius: 10, fillColor: COLORS.primary, fillOpacity: 1, color: 'white', weight: 3,
-          }).addTo(mapRef.current);
-        }
-
-        if (isNavigating) mapRef.current.panTo(newPos);
-
-        // Save location to Firestore for Cloud Function proximity notifications
-        const cu = auth.currentUser;
-        if (cu) {
-          updateDoc(doc(db, 'users', cu.uid), { lastLat: lat, lastLng: lng }).catch(() => {});
-        }
-
-        reports.forEach(report => {
-          const dist = L.latLng(newPos).distanceTo(L.latLng(report.lat, report.lng));
-          if (dist < 100) {
-            const msg = `Atenție: Intri într-o zonă periculoasă (${report.categories.join(', ')})`;
-            if (proximityAlert !== msg) setProximityAlert(msg);
-          }
-        });
-
-        if (showSafeSpaces) fetchSafeSpaces(lat, lng);
-      }, err => console.error(err), { enableHighAccuracy: true });
-    }
+    // Cleanup watch on unmount
+    return () => {
+      if (geoWatchIdRef.current && Capacitor.isNativePlatform()) {
+        Geolocation.clearWatch({ id: geoWatchIdRef.current });
+        geoWatchIdRef.current = null;
+      }
+    };
   }, [isNavigating, reports]);
 
   // ── Map markers ─────────────────────────────────────────────────────────

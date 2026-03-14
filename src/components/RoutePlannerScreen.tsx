@@ -5,7 +5,7 @@ import {
   ChevronRight, Zap, Users, Navigation2, ChevronUp, X,
 } from 'lucide-react';
 import { RouteInfo, SearchResult, Report } from '../types';
-
+import { API_URL } from '../config/api';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -102,11 +102,11 @@ async function fetchWalkingRoutes(
 ): Promise<RouteInfo[] | null> {
   const dangerZones = reports.map(r => ({ lat: r.lat, lng: r.lng, weight: r.weight, radiusMeters: reportRadius(r.weight) }));
   try {
-    const res = await fetch('/api/walking-route', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin, destination, dangerZones }),
-    });
+    const res = await fetch(`${API_URL}/api/walking-route`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ origin, destination, dangerZones }),
+});
     const data = await res.json();
     if (!res.ok) { console.error('[fetchWalkingRoutes]', data.error); return null; }
     if (!data.routes?.length) return null;
@@ -452,7 +452,7 @@ export const RoutePlannerScreen = ({
     setSearchError(null);
     try {
       const res = await fetch(
-        `/api/search?q=${encodeURIComponent(val)}&lat=${userLocation[0]}&lon=${userLocation[1]}`
+        `${API_URL}/api/search?q=${encodeURIComponent(val)}&lat=${userLocation[0]}&lon=${userLocation[1]}`
       );
       if (!res.ok) { setSearchError('Serviciu indisponibil.'); return; }
       setSearchResults(await res.json());

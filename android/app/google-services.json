@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "369091761430",
+    "firebase_url": "https://nowo-debfb-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "nowo-debfb",
+    "storage_bucket": "nowo-debfb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:369091761430:android:f5ecdfeaa3488d9e4cac37",
+        "android_client_info": {
+          "package_name": "com.triteam.nowo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB9GtJ_eh7vvcZSu5DeM0DQ5ptlKwtE0Nw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

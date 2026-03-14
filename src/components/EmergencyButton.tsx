@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Shield, X, PhoneCall, Check, Clock } from 'lucide-react';
 import { auth, db } from '../firebase';
 import { doc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 interface EmergencyButtonProps {
   t: any;
@@ -10,19 +12,56 @@ interface EmergencyButtonProps {
   onTimerActive?: (active: boolean) => void;
 }
 
-// Real OS notification
-function showLocalNotification(title: string, body: string, onClick?: () => void) {
-  if (Notification.permission === 'granted') {
-    const n = new Notification(title, {
-      body,
-      icon: '/icon.png',
-      badge: '/icon.png',
-      vibrate: [200, 100, 200],
-    } as any);
-    if (onClick) n.onclick = onClick;
+// ---------------------------------------------------------------------------
+// Local notification helper — native on Android, Notification API on web
+// ---------------------------------------------------------------------------
+async function showLocalNotification(title: string, body: string) {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await LocalNotifications.schedule({
+        notifications: [{
+          title,
+          body,
+          // ID must stay within signed int32 range
+          id: Date.now() % 2_000_000_000,
+          schedule: { at: new Date(Date.now() + 300) },
+          sound: 'default',
+          smallIcon: 'ic_stat_icon_config_sample', // must exist in Android res/
+          iconColor: '#ef4444',
+        }],
+      });
+    } catch (e) {
+      console.error('LocalNotifications.schedule error:', e);
+    }
+  } else {
+    // Web fallback
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/icon.png' });
+    }
   }
 }
 
+// Request notification permission (native or web)
+async function requestPermission(): Promise<boolean> {
+  if (Capacitor.isNativePlatform()) {
+    const { display } = await LocalNotifications.requestPermissions();
+    return display === 'granted';
+  }
+  const result = await Notification.requestPermission();
+  return result === 'granted';
+}
+
+async function checkPermission(): Promise<boolean> {
+  if (Capacitor.isNativePlatform()) {
+    const { display } = await LocalNotifications.checkPermissions();
+    return display === 'granted';
+  }
+  return Notification.permission === 'granted';
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyButtonProps) => {
   const [isExpanded, setIsExpanded]             = useState(false);
   const [customTime, setCustomTime]             = useState('');
@@ -49,11 +88,9 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
       setAwaitingConfirmation(true);
       setIsExpanded(true);
 
-      // Real OS notification when timer expires
       showLocalNotification(
         '⏰ Timer SafeWalk expirat',
         'Ai ajuns la destinație? Dacă nu răspunzi în 15 secunde, contactele vor fi alertate.',
-        () => setIsExpanded(true)
       );
 
       confirmRef.current = setTimeout(() => sendAlert(), 15000);
@@ -71,9 +108,10 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
     const mins = parseInt(customTime);
     if (isNaN(mins) || mins <= 0) return;
 
-    // Request notification permission
-    if (Notification.permission === 'default') {
-      await Notification.requestPermission();
+    // Ensure we have notification permission before starting
+    const granted = await requestPermission();
+    if (!granted) {
+      console.warn('Notification permission not granted — timer will still run but no notification will fire');
     }
 
     const secs = mins * 60;
@@ -83,7 +121,7 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
 
     showLocalNotification(
       '🚶 Timer SafeWalk pornit',
-      `Vei fi alertat în ${mins} minute dacă nu confirmi că ai ajuns.`
+      `Vei fi alertat în ${mins} minute dacă nu confirmi că ai ajuns.`,
     );
   };
 
@@ -112,7 +150,7 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
       const mapsLink = lat && lng ? `https://maps.google.com/?q=${lat},${lng}` : 'locație indisponibilă';
       const message = `🚨 ALERTĂ SafeWalk\n${user.displayName || 'Un utilizator'} are nevoie de ajutor!\nLocație: ${mapsLink}`;
 
-      // SMS for phone-only contacts
+      // SMS for phone-only contacts — window.open works on Android via implicit intent
       const phoneContacts = contacts.filter(c => c.phone && !c.uid);
       if (phoneContacts.length > 0) {
         const numbers = phoneContacts.map(c => c.phone).join(',');
