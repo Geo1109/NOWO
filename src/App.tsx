@@ -1,46 +1,16 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Map as MapIcon, 
-  AlertTriangle, 
-  Bell, 
-  Navigation, 
-  Shield, 
-  X, 
-  ChevronUp, 
-  Clock, 
-  MapPin,
-  Search,
-  Settings as SettingsIcon,
-  Phone,
-  CheckCircle2,
-  Plus,
-  Home,
-  ArrowRight,
-  Info,
-  Activity,
-  Stethoscope,
-  ShoppingBag,
-  Building2,
-  LocateFixed,
-  Navigation2,
-  StopCircle,
-  Footprints
+  AlertTriangle, Navigation, Shield, X,
+  MapPin, Navigation2, StopCircle, Footprints
 } from 'lucide-react';
-import { Language, Report, SafeSpace, UserSettings, RouteInfo, SearchResult } from './types';
+import { Language, Report, SafeSpace, RouteInfo, SearchResult } from './types';
 import { translations } from './translations';
-import { db, OperationType, handleFirestoreError } from "./firebase";
+import { auth, db, OperationType, handleFirestoreError } from "./firebase";
+import { onAuthStateChanged } from 'firebase/auth';
 import { 
-  collection, 
-  onSnapshot, 
-  updateDoc, 
-  doc, 
-  setDoc,
-  query,
-  orderBy,
-  where,
-  Timestamp
+  collection, onSnapshot, updateDoc, doc, setDoc, query, where, Timestamp
 } from "firebase/firestore";
 import { MOCK_REPORTS, MOCK_SAFE_SPACES, COLORS } from './constants';
 
@@ -54,6 +24,7 @@ import { MenuScreen } from './components/MenuScreen';
 import { ReportModal } from './components/ReportModal';
 import { ZoneDetailsModal } from './components/ZoneDetailsModal';
 import { SpaceDetailsModal } from './components/SpaceDetailsModal';
+import { AuthScreen } from './components/AuthScreen';
 
 // --- Safe Space icon SVG generator ---
 // Clean minimal map icons — white pill with colored icon inside
@@ -223,6 +194,18 @@ function AppContent() {
   const [proximityAlert, setProximityAlert] = useState<string | null>(null);
   const [initialDestination, setInitialDestination] = useState<SearchResult | null>(null);
   const [safeSpacesLoading, setSafeSpacesLoading] = useState(false);
+  const [timerActive, setTimerActive] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [currentUser, setCurrentUser] = useState(auth.currentUser);
+
+  // Track auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      if (user) setShowAuth(false); // auto-close auth screen on login
+    });
+    return () => unsub();
+  }, []);
   
   const mapRef = useRef<any>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -600,8 +583,18 @@ function AppContent() {
       <AnimatePresence>
         {activeTab === 'home' && !isNavigating && (
           <motion.div key="home-overlay">
-            <EmergencyButton t={t} />
-            <BottomNav activeTab={activeTab} setActiveTab={(tab) => tab === 'report' ? setShowReportModal(true) : setActiveTab(tab)} t={t} />
+            <EmergencyButton t={t} userLocation={userLocation} onTimerActive={setTimerActive} />
+            <BottomNav 
+              activeTab={activeTab} 
+              setActiveTab={(tab) => {
+                if (tab === 'report') { setShowReportModal(true); return; }
+                // alerts tab requires auth
+                if (tab === 'alerts' && !currentUser) { setShowAuth(true); return; }
+                if (timerActive && tab !== 'home') return; // stay on map when timer running
+                setActiveTab(tab);
+              }} 
+              t={t} 
+            />
           </motion.div>
         )}
 
@@ -622,6 +615,18 @@ function AppContent() {
 
         {activeTab === 'alerts' && (
           <SettingsScreen onClose={() => setActiveTab('home')} t={t} />
+        )}
+
+        {showAuth && (
+          <motion.div
+            key="auth"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[150]"
+          >
+            <AuthScreen onSuccess={() => { setShowAuth(false); setActiveTab('alerts'); }} onClose={() => setShowAuth(false)} />
+          </motion.div>
         )}
 
         {activeTab === 'settings' && (
