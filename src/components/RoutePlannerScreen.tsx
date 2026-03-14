@@ -42,7 +42,7 @@ interface ScoredRoute extends RouteInfo {
 // SNAP fractions are computed dynamically inside the component based on vh.
 // We define pixel constants here and convert inside the hook.
 const NAV_H    = 84;  // BottomNav height in px (h-20 = 80px + 4px bottom padding)
-const SEARCH_H = 160; // handle (20) + search bar (64) + bottom padding (76 for nav clearance)
+const SEARCH_H = 170; // handle (20) + search bar (64) + bottom padding (76 for nav clearance)
 // ROUTES and FULL remain as fractions of vh
 const SNAP_ROUTES_FRAC = 0.58;
 const SNAP_FULL_FRAC   = 0.92;
@@ -427,9 +427,16 @@ export const RoutePlannerScreen = ({
     if (isFocused && !selectedDest) snapTo('FULL');
   }, [isFocused, selectedDest]);
 
-  // When navigating → collapse to SEARCH (NavigationBar takes over)
+  // When navigating → slide sheet fully off screen
   useEffect(() => {
-    if (isNavigating) snapTo('SEARCH');
+    if (isNavigating) {
+      animate(sheetH, 0, { type: 'spring', stiffness: 420, damping: 42 });
+      setSnapState('SEARCH');
+      onSnapChange?.('SEARCH');
+    } else if (navIdx >= 0) {
+      // nav just stopped — snap back to routes if we have them
+      if (routes.length > 0) snapTo('ROUTES');
+    }
   }, [isNavigating]);
 
   // Debounce search
@@ -445,8 +452,7 @@ export const RoutePlannerScreen = ({
     setSearchError(null);
     try {
       const res = await fetch(
-        `/api/search?q=${encodeURIComponent(val)}&lat=${userLocation[0]}&lon=${userLocation[1]}` +
-        `&viewbox=${userLocation[1]-0.1},${userLocation[0]+0.1},${userLocation[1]+0.1},${userLocation[0]-0.1}`
+        `/api/search?q=${encodeURIComponent(val)}&lat=${userLocation[0]}&lon=${userLocation[1]}`
       );
       if (!res.ok) { setSearchError('Serviciu indisponibil.'); return; }
       setSearchResults(await res.json());
@@ -531,12 +537,14 @@ export const RoutePlannerScreen = ({
   // ---------------------------------------------------------------------------
   return (
     <>
-      {/* ── Bottom sheet ── */}
+      {/* ── Bottom sheet — hidden while navigating ── */}
       <motion.div
         className="fixed left-0 right-0 bottom-0 pointer-events-none"
         style={{
           height: sheetH,
           zIndex: snapState === 'FULL' ? 55 : 45,
+          pointerEvents: isNavigating ? 'none' : undefined,
+          visibility: isNavigating ? 'hidden' : 'visible',
         }}
       >
         <div
@@ -597,22 +605,16 @@ export const RoutePlannerScreen = ({
             <div className="flex-1 overflow-y-auto px-4 pb-8 flex flex-col gap-4"
               style={{ height: 'calc(100% - 80px)' }}>
 
-              {/* Destination pill */}
+              {/* Destination pill — no Schimbă button, use the X in search bar instead */}
               {selectedDest && !loading && routes.length > 0 && (
                 <div className="flex items-center gap-3 p-3 bg-primary/5 rounded-xl border border-primary/10">
                   <MapPin size={14} className="text-primary shrink-0" />
                   <p className="text-sm font-bold text-slate-900 flex-1 truncate">{selectedDest.display_name}</p>
-                  <button
-                    onClick={() => { setSelectedDest(null); setRoutes([]); setNavIdx(-1); setQuery(''); snapTo('FULL'); }}
-                    className="text-[10px] font-black text-slate-400 hover:text-slate-600 shrink-0"
-                  >
-                    Schimbă
-                  </button>
                 </div>
               )}
 
-              {/* Recent searches — show whenever sheet is open and no dest selected */}
-              {!selectedDest && snapState !== 'SEARCH' && recentSearches.length > 0 && (
+              {/* Recent searches — only when there is genuinely no destination AND no routes */}
+              {!selectedDest && !loading && routes.length === 0 && recentSearches.length > 0 && (
                 <div>
                   <p className="text-[10px] uppercase text-slate-400 font-black tracking-widest mb-2">Recente</p>
                   <div className="flex flex-col gap-1.5">

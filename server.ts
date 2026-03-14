@@ -89,11 +89,78 @@ async function startServer() {
   app.get("/api/health", (_req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
 
   app.get("/api/search", async (req, res) => {
-    const { q, lat, lon, viewbox } = req.query;
+    const { q, lat, lon } = req.query;
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+
+    // ── Google Places Autocomplete (primary) ──────────────────────────────
+    // Much better than Nominatim: finds cities, streets, businesses by name
+    // anywhere in Romania (and worldwide), with proper Romanian diacritics.
+    if (GOOGLE_KEY) {
+      try {
+        const params = new URLSearchParams({
+          input:      q as string,
+          key:        GOOGLE_KEY,
+          language:   'ro',
+          components: 'country:ro',           // restrict to Romania
+          location:   `${lat},${lon}`,        // bias toward user location
+          radius:     '50000',                // 50km bias radius (not a hard limit)
+        });
+        const r = await fetch(
+          `https://maps.googleapis.com/maps/api/place/autocomplete/json?${params}`,
+          { signal: AbortSignal.timeout(5000) }
+        );
+        if (r.ok) {
+          const data = await r.json();
+          if (data.status === 'OK' || data.status === 'ZERO_RESULTS') {
+            // For each prediction, fetch coordinates via Place Details
+            const predictions = (data.predictions ?? []).slice(0, 5);
+            const results = await Promise.all(
+              predictions.map(async (p: any) => {
+                try {
+                  const detailParams = new URLSearchParams({
+                    place_id: p.place_id,
+                    key:      GOOGLE_KEY,
+                    fields:   'geometry,formatted_address,name',
+                    language: 'ro',
+                  });
+                  const dr = await fetch(
+                    `https://maps.googleapis.com/maps/api/place/details/json?${detailParams}`,
+                    { signal: AbortSignal.timeout(5000) }
+                  );
+                  if (!dr.ok) return null;
+                  const dd = await dr.json();
+                  const loc = dd.result?.geometry?.location;
+                  if (!loc) return null;
+                  return {
+                    display_name: p.description,
+                    lat:  String(loc.lat),
+                    lon:  String(loc.lng),
+                    name: dd.result?.name ?? p.description,
+                  };
+                } catch { return null; }
+              })
+            );
+            res.json(results.filter(Boolean));
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('[search] Google Places failed, falling back to Nominatim:', e);
+      }
+    }
+
+    // ── Nominatim fallback (if no Google key or Google failed) ────────────
+    // Removed bounded=1 so it searches all of Romania, not just the viewbox.
     try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q as string)}&limit=5&lat=${lat}&lon=${lon}&viewbox=${viewbox}&bounded=1&email=stangeorgian38@gmail.com`;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q as string)}&limit=5&lat=${lat}&lon=${lon}&countrycodes=ro&accept-language=ro&email=stangeorgian38@gmail.com`;
       const r = await fetch(url, { headers: { "Accept": "application/json", "User-Agent": "SafeWalk-App" } });
-      res.json(await r.json());
+      const data: any[] = await r.json();
+      res.json(data.map(d => ({
+        display_name: d.display_name,
+        lat:  d.lat,
+        lon:  d.lon,
+        name: d.name,
+      })));
     } catch { res.status(500).json({ error: "Failed to fetch search results" }); }
   });
 
@@ -121,24 +188,15 @@ async function startServer() {
   // ---------------------------------------------------------------------------
   // POST /api/walking-route
   //
-  // Uses Stadia Maps (Valhalla) with exclude_polygons.
+  // Stadia Maps (Valhalla) cu exclude_polygons.
+  // NU folosim via/through waypoints — cauzează loop-uri când punctul
+  // calculat nu e pe o stradă reală.
   //
-  // STRATEGY — always returns up to 3 genuinely different routes:
-  //
-  //   1. SAFEST   — all corridor zones excluded (radius ×1.5 buffer)
-  //   2. FASTEST  — no exclusions at all, pure shortest path
-  //   3. DETOUR   — forced via-point that nudges Valhalla onto a different
-  //                 street network regardless of zone weights. This is the
-  //                 key to getting a 3rd distinct route even when all zones
-  //                 have the same weight.
-  //
-  // The via-point for DETOUR is the midpoint of origin→destination shifted
-  // 90° left by 15% of the route length. This is enough to make Valhalla
-  // pick a different set of streets without making the route absurdly long.
-  //
-  // Deduplication uses coordinate fingerprinting (first+mid+last coord hash)
-  // rather than distance comparison, so routes that happen to be the same
-  // length but use different streets are both kept.
+  // Generăm 4 request-uri simple origin→destinație cu buffere diferite:
+  //   SAFEST  — buffer 1.5× (ocolire maximă)
+  //   NORMAL  — buffer 1.0×
+  //   TIGHT   — buffer 0.6× (drum mai scurt, trece mai aproape)
+  //   FASTEST — fără excluderi
   // ---------------------------------------------------------------------------
   app.post("/api/walking-route", async (req, res) => {
     const STADIA_KEY = process.env.STADIA_API_KEY;
@@ -150,7 +208,6 @@ async function startServer() {
     const allZones: Array<{ lat: number; lng: number; weight: number; radiusMeters: number }> = dangerZones ?? [];
     const cos = cosLat((origin[0] + destination[0]) / 2);
 
-    // Filter zones to corridor around the route
     const routeDist = distM(origin[0], origin[1], destination[0], destination[1], cos);
     const corridor  = Math.max(routeDist / 2, 400);
     const midLat    = (origin[0] + destination[0]) / 2;
@@ -159,46 +216,21 @@ async function startServer() {
 
     console.log("─".repeat(50));
     console.log(`[route] ${origin[0].toFixed(5)},${origin[1].toFixed(5)} → ${destination[0].toFixed(5)},${destination[1].toFixed(5)}`);
-    console.log(`[route] ${allZones.length} zones total → ${zones.length} in corridor`);
+    console.log(`[route] ${allZones.length} zone total → ${zones.length} în coridor (±${corridor.toFixed(0)}m)`);
+    zones.forEach((z, i) => console.log(`  Zona ${i}: w=${z.weight} r=${z.radiusMeters}m @ ${z.lat.toFixed(5)},${z.lng.toFixed(5)}`));
 
     const STADIA_URL = `https://api.stadiamaps.com/route/v1?api_key=${STADIA_KEY}`;
 
-    // All zones excluded (with buffer), used for SAFEST
     const safestPolys = zones.map(z => circleToPolygon(z.lat, z.lng, z.radiusMeters * 1.5, cos));
+    const normalPolys = zones.map(z => circleToPolygon(z.lat, z.lng, z.radiusMeters * 1.0, cos));
+    const tightPolys  = zones.map(z => circleToPolygon(z.lat, z.lng, z.radiusMeters * 0.6, cos));
 
-    // -----------------------------------------------------------------------
-    // Compute a via-point 90° left of the path for the DETOUR route.
-    // We shift the midpoint perpendicularly by 15% of route length.
-    // This forces Valhalla to route through a different part of the street
-    // network, giving a genuinely distinct 3rd option.
-    // -----------------------------------------------------------------------
-    const DEG = 111320;
-    const dLatDeg = destination[0] - origin[0];
-    const dLngDeg = destination[1] - origin[1];
-    // Convert to metric to get true perpendicular
-    const dLatM = dLatDeg * DEG;
-    const dLngM = dLngDeg * DEG * cos;
-    const len   = Math.sqrt(dLatM * dLatM + dLngM * dLngM);
-    const shift = len * 0.18; // 18% of route length sideways
-    // Perpendicular left unit vector (rotate 90° CCW)
-    const perpLatM = -dLngM / len;
-    const perpLngM =  dLatM / len;
-    const viaLat = midLat + (perpLatM * shift) / DEG;
-    const viaLng = midLng + (perpLngM * shift) / (DEG * cos);
-
-    // Also try right side
-    const viaLatR = midLat - (perpLatM * shift) / DEG;
-    const viaLngR = midLng - (perpLngM * shift) / (DEG * cos);
-
-    function buildBody(excludePolygons: [number, number][][], via?: [number, number]) {
-      const locations: any[] = [
-        { lat: origin[0],      lon: origin[1],      type: "break" },
-      ];
-      if (via) locations.push({ lat: via[0], lon: via[1], type: "through" });
-      locations.push({ lat: destination[0], lon: destination[1], type: "break" });
-
+    function buildBody(excludePolygons: [number, number][][]) {
       const body: any = {
-        locations,
+        locations: [
+          { lat: origin[0],      lon: origin[1],      type: "break" },
+          { lat: destination[0], lon: destination[1], type: "break" },
+        ],
         costing: "pedestrian",
         costing_options: { pedestrian: { walking_speed: 4.5 } },
         directions_options: { language: "en-US" },
@@ -223,12 +255,10 @@ async function startServer() {
 
     function normalise(data: any, label: string) {
       if (!data?.trip) return null;
-      // Stadia returns one shape per leg; concat all legs for multi-via routes
       const allCoords: number[][] = [];
       for (const leg of data.trip.legs ?? []) {
         if (!leg.shape) continue;
         const decoded = decodePolyline6(leg.shape);
-        // Avoid duplicating the junction point between legs
         if (allCoords.length > 0) decoded.shift();
         allCoords.push(...decoded);
       }
@@ -237,8 +267,8 @@ async function startServer() {
       const { score, hits } = scoreCoords(allCoords, zones, cos);
       const distance = (data.trip.summary?.length ?? 0) * 1000;
       const duration = data.trip.summary?.time ?? 0;
-      console.log(`[route] ${label}: ${(distance / 1000).toFixed(2)}km score=${score} hits=${hits.length}/${zones.length}`);
-      if (hits.length) hits.forEach(h => console.log(`  !! zone w=${h.weight} @ ${h.lat.toFixed(5)},${h.lng.toFixed(5)}`));
+      console.log(`[route] ${label}: ${(distance / 1000).toFixed(2)}km scor=${score} pericole=${hits.length}/${zones.length}`);
+      if (hits.length) hits.forEach(h => console.log(`  !! zona w=${h.weight} @ ${h.lat.toFixed(5)},${h.lng.toFixed(5)}`));
 
       return {
         distance, duration,
@@ -255,11 +285,6 @@ async function startServer() {
       };
     }
 
-    // -----------------------------------------------------------------------
-    // Fingerprint a route by sampling coords at 0%, 25%, 50%, 75%, 100%
-    // Rounds to ~11m grid. Two routes are "same" if all 5 samples match.
-    // This is much more accurate than distance-based deduplication.
-    // -----------------------------------------------------------------------
     function fingerprint(coords: number[][]): string {
       if (!coords.length) return "";
       const indices = [0, 0.25, 0.5, 0.75, 1].map(f => Math.floor(f * (coords.length - 1)));
@@ -269,24 +294,22 @@ async function startServer() {
       }).join("|");
     }
 
-    // Fire all requests in parallel
-    console.log(`[route] safestPolys=${safestPolys.length} via=(${viaLat.toFixed(5)},${viaLng.toFixed(5)})`);
+    console.log(`[route] SAFEST=${safestPolys.length} | NORMAL=${normalPolys.length} | TIGHT=${tightPolys.length} | FASTEST=0`);
 
-    const [safeData, fastData, detourLData, detourRData] = await Promise.all([
-      fetchValhalla(buildBody(safestPolys),                        "SAFEST"),
-      fetchValhalla(buildBody([]),                                 "FASTEST"),
-      fetchValhalla(buildBody(safestPolys, [viaLat,  viaLng ]),   "DETOUR-L"),
-      fetchValhalla(buildBody(safestPolys, [viaLatR, viaLngR]),   "DETOUR-R"),
+    const [safeData, normalData, tightData, fastData] = await Promise.all([
+      fetchValhalla(buildBody(safestPolys), "SAFEST"),
+      fetchValhalla(buildBody(normalPolys), "NORMAL"),
+      fetchValhalla(buildBody(tightPolys),  "TIGHT"),
+      fetchValhalla(buildBody([]),          "FASTEST"),
     ]);
 
     const candidates = [
-      normalise(safeData,    "SAFEST"),
-      normalise(fastData,    "FASTEST"),
-      normalise(detourLData, "DETOUR-L"),
-      normalise(detourRData, "DETOUR-R"),
+      normalise(safeData,   "SAFEST"),
+      normalise(normalData, "NORMAL"),
+      normalise(tightData,  "TIGHT"),
+      normalise(fastData,   "FASTEST"),
     ].filter(Boolean) as NonNullable<ReturnType<typeof normalise>>[];
 
-    // Deduplicate by coordinate fingerprint — keep safest among identical paths
     const seen = new Map<string, typeof candidates[0]>();
     for (const c of candidates) {
       const fp = fingerprint(c.geometry.coordinates as number[][]);
@@ -298,7 +321,7 @@ async function startServer() {
     deduped.sort((a, b) => b.safetyScore - a.safetyScore);
     const final = deduped.slice(0, 3);
 
-    console.log(`[route] → ${final.length} routes: ${final.map(r => `score=${r.safetyScore} ${(r.distance/1000).toFixed(2)}km`).join(" | ")}`);
+    console.log(`[route] → ${final.length} trasee: ${final.map(r => `scor=${r.safetyScore} ${(r.distance/1000).toFixed(2)}km`).join(" | ")}`);
     res.json({ routes: final });
   });
 
