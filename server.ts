@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { config } from "dotenv";
+import cors from "cors";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
@@ -83,7 +84,10 @@ function decodePolyline6(encoded: string): number[][] {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  
+
+  app.use(cors());
+  const PORT = Number(process.env.PORT) || 3000;
   app.use(express.json());
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
