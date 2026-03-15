@@ -230,7 +230,7 @@ export const AuthScreen = ({ onSuccess, onClose }: AuthScreenProps) => {
             <Shield size={28} className="text-white" />
           </div>
           <div className="text-center">
-            <h1 className="text-white text-2xl font-bold tracking-tight">NoWo</h1>
+            <h1 className="text-white text-2xl font-bold tracking-tight">SafeWalk</h1>
             <p className="text-white/50 text-sm mt-0.5">Fii în siguranță. Oriunde.</p>
           </div>
         </div>

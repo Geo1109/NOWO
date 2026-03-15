@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MapPin, CheckCircle2, Clock, AlertTriangle, Dog, Users, Lightbulb, Ban, MessageSquareWarning, HelpCircle, UserX } from 'lucide-react';
+import { MapPin, CheckCircle2, Clock, AlertTriangle, Dog, Users, ShoppingBag, Ban, MessageSquareWarning, HelpCircle, UserX } from 'lucide-react';
 
 interface ReportModalProps {
   onClose: () => void;
@@ -14,7 +14,7 @@ const CATEGORIES = [
   { id: 'dogs',        label: 'Câini agresivi',       Icon: Dog,                  color: '#f97316' },
   { id: 'intoxicated', label: 'Persoane turbulente',  Icon: AlertTriangle,        color: '#eab308' },
   { id: 'gathering',   label: 'Grup nesigur',         Icon: Users,                color: '#8b5cf6' },
-  { id: 'lighting',    label: 'Iluminat slab',        Icon: Lightbulb,            color: '#6366f1' },
+  { id: 'lighting',    label: 'Pickpocketi',          Icon: ShoppingBag,          color: '#6366f1' },
   { id: 'blocked',     label: 'Cale blocată',         Icon: Ban,                  color: '#64748b' },
   { id: 'harassment',  label: 'Hărțuire',            Icon: MessageSquareWarning,  color: '#ec4899' },
   { id: 'other',       label: 'Altceva',              Icon: HelpCircle,            color: '#94a3b8' },

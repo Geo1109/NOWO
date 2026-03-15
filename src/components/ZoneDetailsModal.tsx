@@ -17,7 +17,7 @@ const CATEGORY_CONFIG: Record<string, { label: string; color: string; bg: string
   dogs:        { label: 'Câini agresivi',        color: '#f97316', bg: '#fff7ed' },
   intoxicated: { label: 'Persoane turbulente',   color: '#eab308', bg: '#fefce8' },
   gathering:   { label: 'Grup nesigur',          color: '#8b5cf6', bg: '#f5f3ff' },
-  lighting:    { label: 'Iluminat slab',         color: '#6366f1', bg: '#eef2ff' },
+  lighting:    { label: 'Pickpocketi',           color: '#6366f1', bg: '#eef2ff' },
   blocked:     { label: 'Cale blocată',          color: '#64748b', bg: '#f8fafc' },
   harassment:  { label: 'Hărțuire',             color: '#ec4899', bg: '#fdf2f8' },
   other:       { label: 'Altceva',               color: '#94a3b8', bg: '#f8fafc' },

@@ -35,7 +35,7 @@ const REPORT_COOLDOWN_MS   = 4 * 60 * 1000;
 const DEDUP_RADIUS_M       = 40;
 const MAX_REPORTS_NEW_ACCT = 2;
 const NEW_ACCT_WINDOW_MS   = 24 * 60 * 60 * 1000;
-const REPORT_RANGE_M       = 100;
+const REPORT_RANGE_M       = 150;  // ← edit this to change the max distance to report a zone
 const USER_MARKER_SIZE     = 36;
 
 const makeExpiresAt = () => new Date(Date.now() + REPORT_EXPIRE_MS).toISOString();
@@ -152,8 +152,54 @@ function AppContent() {
   const [mapPanned, setMapPanned]                   = useState(false);
   const [isRerouting, setIsRerouting]               = useState(false);
   const [navDestination, setNavDestination]         = useState<SearchResult | null>(null);
-  const [navResetKey, setNavResetKey] = useState(0);
-  const [reportFeedback, setReportFeedback]         = useState<string | null>(null);
+  const [routeZoneAlert, setRouteZoneAlert]         = useState<{ zone: Report; onReroute: () => void } | null>(null);
+  const [shakeEmergencyEnabled, setShakeEmergencyEnabled] = useState(false);
+
+  // Load shake preference on mount
+  useEffect(() => {
+    const load = async () => {
+      if (Capacitor.isNativePlatform()) {
+        const { Preferences } = await import('@capacitor/preferences');
+        const { value } = await Preferences.get({ key: 'shakeEmergency' });
+        setShakeEmergencyEnabled(value === 'true');
+      } else {
+        setShakeEmergencyEnabled(localStorage.getItem('shakeEmergency') === 'true');
+      }
+    };
+    load();
+    // Re-check every time app comes to foreground
+    const interval = setInterval(load, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const shakeEnabledRef  = useRef(false);
+  const shakeBurstRef    = useRef<number[]>([]);   // timestamps of recent big shakes
+  const tapBurstRef      = useRef<number[]>([]);   // timestamps of recent bell taps
+  const shakeAlertSentRef = useRef(false);
+  const adminModeRef      = useRef(false);
+
+  // Keep adminModeRef in sync with the pref (SettingsScreen writes it)
+  useEffect(() => {
+    const check = async () => {
+      try {
+        if (Capacitor.isNativePlatform()) {
+          const { Preferences } = await import('@capacitor/preferences');
+          const { value } = await Preferences.get({ key: 'adminMode' });
+          adminModeRef.current = value === 'true';
+        } else {
+          adminModeRef.current = localStorage.getItem('adminMode') === 'true';
+        }
+      } catch {}
+    };
+    check();
+    const id = setInterval(check, 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => { shakeEnabledRef.current = shakeEmergencyEnabled; }, [shakeEmergencyEnabled]);
+  const [navBarVisible, setNavBarVisible]             = useState(false); // BottomNav shown during navigation
+  const [navResetKey, setNavResetKey]                 = useState(0);
+  const [reportFeedback, setReportFeedback]           = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, user => { setCurrentUser(user); if (user) setShowAuth(false); });
@@ -185,8 +231,10 @@ function AppContent() {
   const activeRouteRef          = useRef<RouteInfo | null>(null);
   const navDestinationRef       = useRef<SearchResult | null>(null);
   const isReroutingRef          = useRef(false);
+  const knownRouteZoneIdsRef    = useRef<Set<string>>(new Set()); // zones already known when nav started
   const gpsReadyRef             = useRef(false);       // avoids stale closure on gpsReady
-  const showSafeSpacesRef       = useRef(showSafeSpaces); // avoids stale closure on showSafeSpaces
+  const showSafeSpacesRef       = useRef(showSafeSpaces);
+  const alertedZoneIdsRef       = useRef<Set<string>>(new Set());
   const reportingActiveRef      = useRef(false);
   const lastSafeSpacesFetchRef  = useRef('');
   const geoWatchIdRef           = useRef<string | null>(null);
@@ -208,6 +256,145 @@ function AppContent() {
   useEffect(() => { navDestinationRef.current = navDestination; }, [navDestination]);
   useEffect(() => { isReroutingRef.current = isRerouting; }, [isRerouting]);
   useEffect(() => { showSafeSpacesRef.current = showSafeSpaces; }, [showSafeSpaces]);
+
+  // ── Geolocation — polling + watch hybrid ─────────────────────────────────
+  // watchPosition on Android can silently stop delivering callbacks (FusedLocationProvider
+  // throttling, battery saver, etc.). We add a setInterval poll as a guaranteed fallback.
+  const startGeoWatch = useCallback(async () => {
+    const onPos = (lat: number, lng: number) => handlePositionRef.current(lat, lng);
+
+    if (Capacitor.isNativePlatform()) {
+      try {
+        // Request permission — shows native Allow/Deny dialog
+        const perm = await Geolocation.requestPermissions();
+        const granted = perm.location === 'granted' || (perm as any).coarseLocation === 'granted';
+
+        if (!granted) {
+          console.warn('[GPS] Permission denied');
+          return;
+        }
+
+        // Try to get first position; if GPS service is off this throws
+        let first: any = null;
+        try {
+          first = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
+        } catch (e: any) {
+          console.warn('[GPS] Initial position failed (GPS off?):', e?.message);
+          // Show the "Turn on Location?" dialog via our custom plugin
+          try {
+            const { LocationSettings } = await import('./LocationSettings');
+            await LocationSettings.requestLocationServices();
+            // Wait for user to enable and try once more
+            await new Promise(r => setTimeout(r, 1500));
+            first = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000 }).catch(() => null);
+          } catch {}
+        }
+
+        if (first) onPos(first.coords.latitude, first.coords.longitude);
+
+        // watchPosition for continuous updates
+        try {
+          geoWatchIdRef.current = await Geolocation.watchPosition(
+            { enableHighAccuracy: true },
+            (p, e) => {
+              if (e) { console.warn('[GPS] watch error', e); return; }
+              if (!p) return;
+              onPos(p.coords.latitude, p.coords.longitude);
+            }
+          );
+        } catch (watchErr) {
+          console.warn('[GPS] watchPosition failed, poll-only mode', watchErr);
+        }
+
+        // Poll every 3s as fallback
+        if (geoPollRef.current) clearInterval(geoPollRef.current);
+        geoPollRef.current = setInterval(async () => {
+          try {
+            const p = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
+            onPos(p.coords.latitude, p.coords.longitude);
+          } catch (e) {
+            console.warn('[GPS] poll error', e);
+          }
+        }, 3000);
+
+      } catch (e) { console.error('[GPS] init error', e); }
+
+    } else {
+      // Web browser
+      if (!navigator.geolocation) return;
+      navigator.geolocation.getCurrentPosition(
+        p => onPos(p.coords.latitude, p.coords.longitude),
+        () => {},
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+      navigator.geolocation.watchPosition(
+        p => onPos(p.coords.latitude, p.coords.longitude),
+        err => console.warn('[GPS] web watch error', err),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+      );
+      if (geoPollRef.current) clearInterval(geoPollRef.current);
+      geoPollRef.current = setInterval(() => {
+        navigator.geolocation.getCurrentPosition(
+          p => onPos(p.coords.latitude, p.coords.longitude),
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 2000 }
+        );
+      }, 3000);
+    }
+  }, []); // stable
+
+  // ── Re-trigger GPS when app resumes from background ───────────────────────
+  // Handles: user turned location ON while app was backgrounded → dot appears immediately
+  useEffect(() => {
+    const onResume = () => {
+      console.log('[NoWo] App resumed — re-checking GPS');
+      // If we don't have a position yet, restart the geo watch
+      if (!gpsReadyRef.current) {
+        startGeoWatch();
+      } else {
+        // We already have a fix; just force an immediate position refresh
+        if (Capacitor.isNativePlatform()) {
+          Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 8000 })
+            .then(p => handlePositionRef.current(p.coords.latitude, p.coords.longitude))
+            .catch(() => {});
+        }
+      }
+    };
+    window.addEventListener('nowo:appResumed', onResume);
+    return () => window.removeEventListener('nowo:appResumed', onResume);
+  }, [startGeoWatch]);
+
+  // ── Detect new danger zones appearing ON the active route ─────────────────
+  useEffect(() => {
+    if (!isNavigating || !activeRoute?.geometry?.coordinates) return;
+    const routeCoords = activeRoute.geometry.coordinates as number[][];
+    if (routeCoords.length < 2) return;
+
+    for (const report of reports) {
+      // Skip if we already knew about this zone when navigation started
+      if (knownRouteZoneIdsRef.current.has(report.id)) continue;
+
+      // Check if this zone intersects the remaining route
+      const onRoute = distToRoute(routeCoords, report.lat, report.lng) < DANGER_ZONE_RADIUS_M + 10;
+      if (!onRoute) continue;
+
+      // New zone on route! Add to known set so we don't re-alert
+      knownRouteZoneIdsRef.current.add(report.id);
+
+      // Don't show prompt if already rerouting or a prompt is already visible
+      if (isReroutingRef.current || routeZoneAlert) continue;
+
+      const capturedPos = userLocationRef.current;
+      setRouteZoneAlert({
+        zone: report,
+        onReroute: () => {
+          setRouteZoneAlert(null);
+          if (capturedPos) triggerReroute(capturedPos);
+        },
+      });
+      break; // Show one prompt at a time
+    }
+  }, [reports, isNavigating, activeRoute]);
 
   // ── Heading with dead-zone smoothing ─────────────────────────────────────
   useEffect(() => {
@@ -241,6 +428,71 @@ function AppContent() {
       if (headingThrottleRef.current) clearTimeout(headingThrottleRef.current);
     };
   }, []);
+
+  // ── Shake / 5-tap emergency ────────────────────────────────────────────────
+  const sendShakeAlert = useCallback(async () => {
+    if (shakeAlertSentRef.current) return;
+    shakeAlertSentRef.current = true;
+    // Re-allow after 30s
+    setTimeout(() => { shakeAlertSentRef.current = false; }, 30_000);
+
+    const user = auth.currentUser;
+    if (!user) return;
+    try {
+      const { getDocs: gd, query: q2, collection: col2, where: w2, updateDoc: ud, doc: d2, arrayUnion: au } = await import('firebase/firestore');
+      const snap = await gd(q2(col2(db, 'users'), w2('uid', '==', user.uid)));
+      const contacts: { name: string; phone?: string; uid?: string }[] = snap.empty ? [] : (snap.docs[0].data()?.emergencyContacts ?? []);
+      const loc = userLocationRef.current;
+      const mapsLink = loc ? `https://maps.google.com/?q=${loc[0]},${loc[1]}` : 'locație indisponibilă';
+      const msg = `🆘 ALERTĂ SOS SafeWalk\n${user.displayName || 'Un utilizator'} are nevoie de ajutor urgent!\nLocație: ${mapsLink}`;
+
+      // SMS contacts
+      const phones = contacts.filter(c => c.phone && !c.uid);
+      if (phones.length) window.open(`sms:${phones.map(c => c.phone).join(',')}?body=${encodeURIComponent(msg)}`, '_blank');
+
+      // Firestore push for app contacts
+      for (const c of contacts.filter(cc => cc.uid)) {
+        await ud(d2(db, 'users', c.uid!), { incomingAlerts: au({ from: user.displayName || user.email, fromUid: user.uid, location: loc ? { lat: loc[0], lng: loc[1] } : null, mapsLink, timestamp: new Date().toISOString(), read: false }) });
+      }
+      setProximityAlert('🆘 Alertă SOS trimisă contactelor de urgență!');
+    } catch (e) { console.error('Shake alert error', e); }
+  }, []);
+
+  // Shake detection via DeviceMotion
+  useEffect(() => {
+    const SHAKE_THRESHOLD = 22;   // m/s² — strong but not accidental
+    const BURST_WINDOW_MS = 1500; // 3 shakes within 1.5s
+    const BURST_COUNT     = 3;
+
+    const onMotion = (e: DeviceMotionEvent) => {
+      if (!shakeEnabledRef.current) return;
+      const acc = e.accelerationIncludingGravity;
+      if (!acc) return;
+      const mag = Math.sqrt((acc.x ?? 0) ** 2 + (acc.y ?? 0) ** 2 + (acc.z ?? 0) ** 2);
+      if (mag > SHAKE_THRESHOLD) {
+        const now = Date.now();
+        shakeBurstRef.current = [...shakeBurstRef.current.filter(t => now - t < BURST_WINDOW_MS), now];
+        if (shakeBurstRef.current.length >= BURST_COUNT) {
+          shakeBurstRef.current = [];
+          sendShakeAlert();
+        }
+      }
+    };
+
+    window.addEventListener('devicemotion', onMotion as EventListener);
+    return () => window.removeEventListener('devicemotion', onMotion as EventListener);
+  }, [sendShakeAlert]);
+
+  // Expose tap counter for EmergencyButton (5 rapid taps)
+  const handleEmergencyTap = useCallback(() => {
+    if (!shakeEnabledRef.current) return;
+    const now = Date.now();
+    tapBurstRef.current = [...tapBurstRef.current.filter(t => now - t < 2000), now];
+    if (tapBurstRef.current.length >= 5) {
+      tapBurstRef.current = [];
+      sendShakeAlert();
+    }
+  }, [sendShakeAlert]);
 
   // ── Firestore reports ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -364,9 +616,10 @@ function AppContent() {
 
       reportsRef.current.forEach(report => {
         const dist = haversineM(newPos, [report.lat, report.lng]);
-        if (dist < 100) {
+        if (dist < 100 && !alertedZoneIdsRef.current.has(report.id)) {
+          alertedZoneIdsRef.current.add(report.id);
           const msg = `⚠️ Zonă periculoasă la ${Math.round(dist)} m (${report.categories[0] || ''})`;
-          setProximityAlert(prev => prev === msg ? prev : msg);
+          setProximityAlert(msg);
         }
       });
 
@@ -374,76 +627,7 @@ function AppContent() {
     };
   }); // no deps — always up-to-date on every render
 
-  // ── Geolocation — polling + watch hybrid ─────────────────────────────────
-  // watchPosition on Android can silently stop delivering callbacks (FusedLocationProvider
-  // throttling, battery saver, etc.). We add a setInterval poll as a guaranteed fallback.
-  const startGeoWatch = useCallback(async () => {
-    const onPos = (lat: number, lng: number) => handlePositionRef.current(lat, lng);
-
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const { location } = await Geolocation.requestPermissions();
-        if (location !== 'granted') {
-          console.warn('[GPS] Permission denied');
-          return;
-        }
-
-        // Immediate first fix
-        const first = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
-        onPos(first.coords.latitude, first.coords.longitude);
-
-        // watchPosition — fires when device reports movement
-        try {
-          geoWatchIdRef.current = await Geolocation.watchPosition(
-            { enableHighAccuracy: true },
-            (p, e) => {
-              if (e) { console.warn('[GPS] watch error', e); return; }
-              if (!p) return;
-              onPos(p.coords.latitude, p.coords.longitude);
-            }
-          );
-        } catch (watchErr) {
-          console.warn('[GPS] watchPosition failed, using poll only', watchErr);
-        }
-
-        // Poll every 3 seconds as guaranteed fallback
-        geoPollRef.current = setInterval(async () => {
-          try {
-            const p = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
-            onPos(p.coords.latitude, p.coords.longitude);
-          } catch (e) {
-            console.warn('[GPS] poll error', e);
-          }
-        }, 3000);
-
-      } catch (e) { console.error('[GPS] init error', e); }
-
-    } else {
-      // Web browser
-      if (!navigator.geolocation) return;
-
-      navigator.geolocation.getCurrentPosition(
-        p => onPos(p.coords.latitude, p.coords.longitude),
-        () => {},
-        { enableHighAccuracy: true, timeout: 8000 }
-      );
-
-      navigator.geolocation.watchPosition(
-        p => onPos(p.coords.latitude, p.coords.longitude),
-        err => console.warn('[GPS] web watch error', err),
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-      );
-
-      // Also poll on web for devices where watchPosition is unreliable
-      geoPollRef.current = setInterval(() => {
-        navigator.geolocation.getCurrentPosition(
-          p => onPos(p.coords.latitude, p.coords.longitude),
-          () => {},
-          { enableHighAccuracy: true, maximumAge: 2000 }
-        );
-      }, 3000);
-    }
-  }, []); // stable
+  
 
   // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -460,6 +644,7 @@ function AppContent() {
     reportsLayerRef.current    = L.layerGroup().addTo(mapRef.current);
     safeSpacesLayerRef.current = L.layerGroup().addTo(mapRef.current);
 
+    // Simple click handler for placing report pins
     mapRef.current.on('click', (e: any) => {
       if (reportingActiveRef.current) setReportLocation([e.latlng.lat, e.latlng.lng]);
     });
@@ -471,10 +656,7 @@ function AppContent() {
       if (geoWatchIdRef.current && Capacitor.isNativePlatform()) {
         Geolocation.clearWatch({ id: geoWatchIdRef.current! });
       }
-      if (geoPollRef.current) {
-        clearInterval(geoPollRef.current);
-        geoPollRef.current = null;
-      }
+      if (geoPollRef.current) { clearInterval(geoPollRef.current); geoPollRef.current = null; }
     };
   }, [startGeoWatch]);
 
@@ -496,7 +678,7 @@ function AppContent() {
       // Category emoji for the pin label
       const EMOJI_MAP: Record<string, string> = {
         suspicious: '👤', dogs: '🐕', intoxicated: '🍺',
-        gathering: '👥', lighting: '💡', blocked: '🚫',
+        gathering: '👥', lighting: '👜', blocked: '🚫',
         harassment: '🆘', other: '⚠️',
       };
       const emoji = EMOJI_MAP[report.categories?.[0]] ?? '⚠️';
@@ -565,12 +747,34 @@ function AppContent() {
     }
 
     if (reportLocation) {
+      // Teardrop pin: circle on top, point at bottom-centre.
+      // border-radius: 50% 50% 50% 50% / 60% 60% 40% 40% with rotation 0° = points down.
+      // We also counter-rotate the icon to stay upright when map is rotated.
+      const bearing = (mapRef.current as any)._bearing ?? 0;
+      const pinHtml = `<div style="
+        width:28px; height:36px; display:flex; align-items:center; justify-content:center;
+        transform: rotate(${-bearing}deg); transform-origin: 14px 36px;
+      ">
+        <div style="
+          width:24px; height:30px;
+          background:#ef4444;
+          border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+          transform: rotate(180deg);
+          border: 2.5px solid white;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          display:flex; align-items:center; justify-content:center;
+        ">
+          <div style="width:8px;height:8px;background:white;border-radius:50%;opacity:0.9;transform:rotate(180deg)"></div>
+        </div>
+      </div>`;
       reportLocationMarkerRef.current = L.marker(reportLocation, {
         icon: L.divIcon({
           className: '',
-          html: `<div style="width:32px;height:32px;background:#ef4444;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>`,
-          iconSize: [32, 32], iconAnchor: [16, 32],
+          html: pinHtml,
+          iconSize: [28, 36],
+          iconAnchor: [14, 36], // point at bottom-centre
         }),
+        zIndexOffset: 1000,
       }).addTo(mapRef.current);
     }
   }, [reports, safeSpaces, showSafeSpaces, reportLocation]);
@@ -641,6 +845,14 @@ function AppContent() {
       walkedCoordsRef.current = [currentPos];
       if (walkedPolylineRef.current) walkedPolylineRef.current.setLatLngs([currentPos]);
 
+      // Re-seed known zones for the new route
+      const newCoords = newRoute.geometry?.coordinates as number[][] ?? [];
+      knownRouteZoneIdsRef.current = new Set(
+        reportsRef.current
+          .filter(rep => distToRoute(newCoords, rep.lat, rep.lng) < DANGER_ZONE_RADIUS_M + 10)
+          .map(rep => rep.id)
+      );
+
       drawRoute(newRoute);
       setActiveRoute(newRoute);
     } catch (e) {
@@ -656,12 +868,23 @@ function AppContent() {
     setActiveRoute(r); setIsNavigating(true);
     walkedCoordsRef.current = []; setMapPanned(false);
     if (dest) setNavDestination(dest);
+    // Seed known zones: any zone currently on the route is "known" — only NEW ones trigger the prompt
+    const coords = r.geometry?.coordinates as number[][] ?? [];
+    const onRouteNow = new Set(
+      reportsRef.current
+        .filter(rep => distToRoute(coords, rep.lat, rep.lng) < DANGER_ZONE_RADIUS_M + 10)
+        .map(rep => rep.id)
+    );
+    knownRouteZoneIdsRef.current = onRouteNow;
+    setRouteZoneAlert(null);
     if (userLocation) mapRef.current?.setView(userLocation, 18);
   };
 
   const stopNavigation = () => {
-    setIsNavigating(false); setActiveRoute(null); setNavDestination(null); setIsRerouting(false);
+    setIsNavigating(false); setActiveRoute(null); setNavDestination(null);
+    setIsRerouting(false); setRouteZoneAlert(null);
     isReroutingRef.current = false; lastRerouteRef.current = 0;
+    knownRouteZoneIdsRef.current = new Set();
     if (routeLayerRef.current) { mapRef.current?.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
     if (remainingLayerRef.current) { mapRef.current?.removeLayer(remainingLayerRef.current); remainingLayerRef.current = null; }
     if (walkedPolylineRef.current) { mapRef.current?.removeLayer(walkedPolylineRef.current); walkedPolylineRef.current = null; }
@@ -681,6 +904,10 @@ function AppContent() {
     mapRef.current?.setView(userLocation, 17); setMapPanned(false);
   }, [userLocation]);
 
+  // Track whether user was actively navigating when they left the home tab.
+  // Used to decide: should we restore navigation state or remount fresh on return?
+  const wasNavigatingRef = useRef(false);
+
   const handleTabChange = (tab: string) => {
     if (tab === 'report') {
       if (!currentUser) { setShowAuth(true); return; }
@@ -688,9 +915,21 @@ function AppContent() {
     }
     if (tab === 'alerts' && !currentUser) { setShowAuth(true); return; }
     if (timerActive && tab !== 'home') return;
-    if (tab !== 'home' && isNavigating) stopNavigation();
-    // When leaving home, increment key so RoutePlannerScreen remounts fresh when user returns
-    if (tab !== 'home' && activeTab === 'home') setNavResetKey(k => k + 1);
+
+    if (tab !== 'home' && activeTab === 'home') {
+      // Leaving home — snapshot navigation state
+      wasNavigatingRef.current = isNavigating;
+    }
+
+    if (tab === 'home' && activeTab !== 'home') {
+      // Returning to home
+      if (!wasNavigatingRef.current) {
+        // Was NOT navigating when we left → remount the planner fresh
+        setNavResetKey(k => k + 1);
+      }
+      // Was navigating → keep planner state as-is (navResetKey unchanged)
+    }
+
     setActiveTab(tab);
   };
 
@@ -720,9 +959,9 @@ function AppContent() {
 
     const [rLat, rLng] = reportLocation;
 
-    // Distance check — must be within 100m
+    // Distance check (bypassed in admin mode)
     const userDistToReport = haversineM(userLocation, reportLocation);
-    if (userDistToReport > REPORT_RANGE_M) {
+    if (!adminModeRef.current && userDistToReport > REPORT_RANGE_M) {
       setReportFeedback(`Poți raporta doar zone la mai puțin de ${REPORT_RANGE_M} m de tine. Ești la ${Math.round(userDistToReport)} m.`);
       return;
     }
@@ -738,8 +977,8 @@ function AppContent() {
       const now = Date.now();
 
       if (userData) {
-        // Cooldown check
-        if (userData.lastReportAt) {
+        // Cooldown check (bypassed in admin mode)
+        if (!adminModeRef.current && userData.lastReportAt) {
           const lastMs = userData.lastReportAt.toMillis ? userData.lastReportAt.toMillis() : Number(userData.lastReportAt);
           if (now - lastMs < REPORT_COOLDOWN_MS) {
             const waitSec = Math.ceil((REPORT_COOLDOWN_MS - (now - lastMs)) / 1000);
@@ -748,13 +987,15 @@ function AppContent() {
           }
         }
 
-        // New account throttle
-        const createdMs = userData.createdAt?.toMillis ? userData.createdAt.toMillis() : null;
-        if (createdMs && now - createdMs < NEW_ACCT_WINDOW_MS) {
-          const reportCount = userData.reportCount || 0;
-          if (reportCount >= MAX_REPORTS_NEW_ACCT) {
-            setReportFeedback('Conturile noi pot raporta maxim 2 incidente în prima zi.');
-            return;
+        // New account throttle (bypassed in admin mode)
+        if (!adminModeRef.current) {
+          const createdMs = userData.createdAt?.toMillis ? userData.createdAt.toMillis() : null;
+          if (createdMs && now - createdMs < NEW_ACCT_WINDOW_MS) {
+            const reportCount = userData.reportCount || 0;
+            if (reportCount >= MAX_REPORTS_NEW_ACCT) {
+              setReportFeedback('Conturile noi pot raporta maxim 2 incidente în prima zi.');
+              return;
+            }
           }
         }
       }
@@ -905,7 +1146,6 @@ function AppContent() {
             onClick={() => setShowSafeSpaces(!showSafeSpaces)}
             className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-xl relative ${showSafeSpaces ? 'bg-safe text-white scale-105' : 'glass text-slate-600'}`}
           >
-            {/* Plus-in-circle icon for safe spaces */}
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
               <path d="M12 8v8M8 12h8"/>
@@ -916,8 +1156,6 @@ function AppContent() {
           </button>
         </div>
       </header>
-
-      {/* Map */}
       <div ref={mapContainerRef} className="flex-1 w-full z-0" />
 
       {/* Reposition button — stacked below the emergency button on the right */}
@@ -935,38 +1173,44 @@ function AppContent() {
 
       {/* Emergency button — always visible on home tab */}
       {activeTab === 'home' && sheetSnap !== 'FULL' && (
-        <EmergencyButton t={t} userLocation={userLocation} onTimerActive={setTimerActive} />
+        <EmergencyButton t={t} userLocation={userLocation} onTimerActive={setTimerActive} onSosTap={handleEmergencyTap} />
       )}
 
       <AnimatePresence>
-        {activeTab === 'home' && (
-          <motion.div key="home-overlay">
-            {!isNavigating && sheetSnap !== 'FULL' && (
-              <BottomNav activeTab={activeTab} setActiveTab={handleTabChange} t={t} />
-            )}
-            {/* key on the wrapper Fragment forces RoutePlannerScreen to remount when navResetKey changes */}
-            <React.Fragment key={navResetKey}>
-            <RoutePlannerScreen
-              onClose={() => { setInitialDestination(null); setAutoNavigate(false); }}
-              t={t}
-              userLocation={userLocation ?? [45.7489, 21.2087]}
-              reports={reports}
-              onDrawRoute={drawRoute}
-              onStartNav={(route, dest) => {
-                if (dest) setNavDestination(dest);
-                startNavigation(route, dest);
-              }}
-              initialDest={initialDestination}
-              isNavigating={isNavigating}
-              activeRoute={activeRoute}
-              onStopNav={stopNavigation}
-              onSnapChange={setSheetSnap}
-              autoNavigate={autoNavigate}
-              isRerouting={isRerouting}
-            />
-            </React.Fragment>
-          </motion.div>
-        )}
+        {/* Home overlay: always mounted so navigation state is never lost.
+            Visually hidden when not on home tab (display:none keeps React tree alive). */}
+        <motion.div
+          key="home-overlay"
+          style={{ display: activeTab === 'home' ? 'block' : 'none' }}
+        >
+          {/* BottomNav: shown when not navigating, OR when navigating and arrow was tapped */}
+          {sheetSnap !== 'FULL' && (!isNavigating || navBarVisible) && (
+            <BottomNav activeTab={activeTab} setActiveTab={handleTabChange} t={t} />
+          )}
+          <React.Fragment key={navResetKey}>
+          <RoutePlannerScreen
+            onClose={() => { setInitialDestination(null); setAutoNavigate(false); setNavBarVisible(false); }}
+            t={t}
+            userLocation={userLocation ?? [45.7489, 21.2087]}
+            reports={reports}
+            onDrawRoute={drawRoute}
+            onStartNav={(route, dest) => {
+              if (dest) setNavDestination(dest);
+              startNavigation(route, dest);
+              setNavBarVisible(false);
+            }}
+            initialDest={initialDestination}
+            isNavigating={isNavigating}
+            activeRoute={activeRoute}
+            onStopNav={() => { stopNavigation(); setNavBarVisible(false); }}
+            onSnapChange={setSheetSnap}
+            autoNavigate={autoNavigate}
+            isRerouting={isRerouting}
+            navVisible={navBarVisible}
+            onToggleNavVisible={() => setNavBarVisible(v => !v)}
+          />
+          </React.Fragment>
+        </motion.div>
 
         {activeTab === 'alerts' && <SettingsScreen onClose={() => setActiveTab('home')} t={t} onOpenMenu={() => setActiveTab('settings')} />}
         {activeTab === 'settings' && <MenuScreen onClose={() => setActiveTab('alerts')} t={t} />}
@@ -1014,6 +1258,70 @@ function AppContent() {
             onNavigate={() => handleNavigateToSafeSpace(selectedSpace)}
             t={t}
           />
+        )}
+
+        {/* ── New danger zone on route prompt ─────────────────────────────── */}
+        {routeZoneAlert && (
+          <motion.div
+            key="route-zone-alert"
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            className="fixed inset-0 z-[90] flex items-end justify-center"
+            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)', paddingLeft: 16, paddingRight: 16 }}
+          >
+            {/* Backdrop */}
+            <div className="absolute inset-0 bg-black/40" onClick={() => setRouteZoneAlert(null)} />
+
+            {/* Card */}
+            <div className="relative w-full bg-white rounded-3xl shadow-2xl overflow-hidden">
+              {/* Red header */}
+              <div style={{ background: '#fef2f2', borderBottom: '1px solid #fecaca', padding: '14px 20px' }}>
+                <div className="flex items-center gap-3">
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <AlertTriangle size={20} color="#ef4444" />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#f87171', marginBottom: 2 }}>
+                      Alertă pe traseu
+                    </p>
+                    <p style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                      Zonă periculoasă nouă detectată
+                    </p>
+                  </div>
+                </div>
+                <p style={{ fontSize: 12, color: '#475569', marginTop: 8, lineHeight: 1.5 }}>
+                  A fost raportată o nouă zonă periculoasă pe traseul tău activ.
+                  Vrei să recalculez ruta pentru a o evita?
+                </p>
+                {/* Category chips */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {(routeZoneAlert.zone.categories || []).map((cat, i) => (
+                    <span key={i} style={{ padding: '3px 10px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: '#fee2e2', color: '#ef4444' }}>
+                      {cat}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Buttons */}
+              <div style={{ display: 'flex', gap: 10, padding: '14px 20px' }}>
+                <button
+                  onClick={routeZoneAlert.onReroute}
+                  style={{ flex: 1, height: 52, borderRadius: 16, background: '#0f172a', color: 'white', fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+                  Recalculează ruta
+                </button>
+                <button
+                  onClick={() => setRouteZoneAlert(null)}
+                  style={{ flex: 1, height: 52, borderRadius: 16, background: '#f1f5f9', color: '#475569', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}
+                >
+                  Continuă pe ruta curentă
+                </button>
+              </div>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

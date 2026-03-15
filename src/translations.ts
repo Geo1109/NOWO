@@ -2,7 +2,7 @@ import { Language } from './types';
 
 export const translations: Record<Language, any> = {
   en: {
-    appName: "NoWo",
+    appName: "SafeWalk",
     emergency: "🚨 Emergency: Share live location",
     alertIfNoArrive: "Alert if not arrived in:",
     safeRoute: "Safe Route",
@@ -41,14 +41,14 @@ export const translations: Record<Language, any> = {
       dogs: "🐕 Aggressive dogs",
       intoxicated: "🍺 Intoxicated individuals",
       gathering: "🏕️ Unsafe gathering",
-      lighting: "💡 Poor lighting",
+      lighting: "👜 Pickpockets",
       blocked: "🚫 Blocked path",
       harassment: "🆘 Harassment",
       other: "❓ Other"
     }
   },
   ro: {
-    appName: "NoWo",
+    appName: "SafeWalk",
     emergency: "🚨 Urgență: Partajează locația live",
     alertIfNoArrive: "Alertă dacă nu ajung în:",
     safeRoute: "Traseu Sigur",
@@ -87,7 +87,7 @@ export const translations: Record<Language, any> = {
       dogs: "🐕 Câini agresivi",
       intoxicated: "🍺 Persoane în stare de ebrietate",
       gathering: "🏕️ Grup intimidant",
-      lighting: "💡 Iluminat slab",
+      lighting: "👜 Hoti de buzunare",
       blocked: "🚫 Cale blocată",
       harassment: "🆘 Hărțuire",
       other: "❓ Altele"

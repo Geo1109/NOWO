@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronLeft, User, Search, Trash2, LogOut, Bell, BellOff, UserCheck, UserPlus, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, User, Search, Trash2, LogOut, Bell, UserCheck, UserPlus, AlertTriangle, KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { auth, db, requestNotificationPermission } from '../firebase';
 import { signOut } from 'firebase/auth';
 import { doc, getDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from 'firebase/firestore';
@@ -74,9 +74,17 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
   const user = auth.currentUser;
 
   // Prefs are loaded asynchronously — start with safe defaults
-  const [alertNearMe, setAlertNearMe]   = useState(false);
-  const [notifyFlagged, setNotifyFlagged] = useState(false);
+  const [alertNearMe, setAlertNearMe]       = useState(false);
+  const [notifyFlagged, setNotifyFlagged]   = useState(false);
+  const [shakeEmergency, setShakeEmergency] = useState(false);
   const [notifPermission, setNotifPermission] = useState<PermState>('prompt');
+  const [adminActive, setAdminActive]       = useState(false);
+  const [showAdminInput, setShowAdminInput] = useState(false);
+  const [adminCodeInput, setAdminCodeInput] = useState('');
+  const [adminError, setAdminError]         = useState('');
+
+  // Secret admin code — change this to whatever you want
+  const ADMIN_CODE = 'nowo2024admin';
   const [prefsLoaded, setPrefsLoaded]   = useState(false);
 
   const [contacts, setContacts]           = useState<Contact[]>([]);
@@ -89,12 +97,16 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
   // ── Load persisted prefs on mount ────────────────────────────────────────
   useEffect(() => {
     const load = async () => {
-      const [alertVal, flaggedVal] = await Promise.all([
+      const [alertVal, flaggedVal, shakeVal, adminVal] = await Promise.all([
         getPref('alertNearMe'),
         getPref('notifyFlagged'),
+        getPref('shakeEmergency'),
+        getPref('adminMode'),
       ]);
       setAlertNearMe(alertVal === 'true');
       setNotifyFlagged(flaggedVal === 'true');
+      setShakeEmergency(shakeVal === 'true');
+      setAdminActive(adminVal === 'true');
       setPrefsLoaded(true);
 
       // Check current notification permission
@@ -121,6 +133,16 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
       updateDoc(doc(db, 'users', user.uid), { notifyFlagged }).catch(() => {});
     }
   }, [notifyFlagged, prefsLoaded]);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    setPref('shakeEmergency', String(shakeEmergency));
+  }, [shakeEmergency, prefsLoaded]);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    setPref('adminMode', String(adminActive));
+  }, [adminActive, prefsLoaded]);
 
   // ── Load contacts + incoming alerts ──────────────────────────────────────
   useEffect(() => {
@@ -296,6 +318,13 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
             onChange={setNotifyFlagged}
             primary={PRIMARY}
           />
+          <Toggle
+            label="🆘 Alertă prin scuturare"
+            sublabel="Scutură rapid telefonul de 3 ori sau apasă butonul de urgență de 5 ori pentru a alerta contactele automat"
+            value={shakeEmergency}
+            onChange={setShakeEmergency}
+            primary="#ef4444"
+          />
         </Section>
 
         {/* Contacte urgență */}
@@ -312,7 +341,7 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
                   <input
                     type="email"
                     inputMode="email"
-                    placeholder="Email utilizator..."
+                    placeholder="Email utilizator SafeWalk..."
                     value={searchEmail}
                     onChange={e => { setSearchEmail(e.target.value); setSearchError(''); setSearchResult(null); }}
                     onKeyDown={e => e.key === 'Enter' && searchUser()}
@@ -387,6 +416,108 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
               )}
             </>
           )}
+        </Section>
+
+        {/* ── Admin Mode ─────────────────────────────────────────────────── */}
+        <Section title="⚙️ Mod Administrator">
+          {/* Status card */}
+          <div
+            className="p-4 rounded-2xl flex items-center justify-between"
+            style={{
+              background: adminActive ? '#f0fdf4' : '#f8fafc',
+              border: `1.5px solid ${adminActive ? '#86efac' : '#e2e8f0'}`,
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                style={{ background: adminActive ? '#dcfce7' : '#f1f5f9' }}>
+                {adminActive
+                  ? <ShieldCheck size={18} color="#16a34a" />
+                  : <ShieldOff size={18} color="#94a3b8" />
+                }
+              </div>
+              <div>
+                <p className="text-sm font-bold text-slate-800">
+                  {adminActive ? 'Mod Admin activ' : 'Mod Admin inactiv'}
+                </p>
+                <p className="text-xs text-slate-400">
+                  {adminActive
+                    ? 'Fără limită de distanță sau rată de raportare'
+                    : 'Introdu codul pentru acces extins'}
+                </p>
+              </div>
+            </div>
+            {adminActive ? (
+              <button
+                onClick={() => { setAdminActive(false); setShowAdminInput(false); }}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold"
+                style={{ background: '#fee2e2', color: '#ef4444' }}
+              >
+                Dezactivează
+              </button>
+            ) : (
+              <button
+                onClick={() => { setShowAdminInput(v => !v); setAdminError(''); setAdminCodeInput(''); }}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold"
+                style={{ background: '#e0f2fe', color: '#0284c7' }}
+              >
+                Activează
+              </button>
+            )}
+          </div>
+
+          {/* Code input */}
+          <AnimatePresence>
+            {showAdminInput && !adminActive && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }} className="overflow-hidden"
+              >
+                <div className="flex gap-2 mt-1">
+                  <div className="flex-1 flex items-center gap-2 px-4 h-12 rounded-2xl bg-white"
+                    style={{ border: `1.5px solid ${adminError ? '#fca5a5' : '#e2e8f0'}` }}>
+                    <KeyRound size={14} className="text-slate-400 shrink-0" />
+                    <input
+                      type="password"
+                      placeholder="Cod administrator..."
+                      value={adminCodeInput}
+                      onChange={e => { setAdminCodeInput(e.target.value); setAdminError(''); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          if (adminCodeInput === ADMIN_CODE) {
+                            setAdminActive(true); setShowAdminInput(false);
+                          } else {
+                            setAdminError('Cod incorect.');
+                          }
+                        }
+                      }}
+                      className="flex-1 bg-transparent text-sm text-slate-800 focus:outline-none placeholder:text-slate-400"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (adminCodeInput === ADMIN_CODE) {
+                        setAdminActive(true); setShowAdminInput(false);
+                      } else {
+                        setAdminError('Cod incorect.');
+                      }
+                    }}
+                    className="px-4 h-12 rounded-2xl text-xs font-bold text-white"
+                    style={{ background: '#0284c7' }}
+                  >
+                    OK
+                  </button>
+                </div>
+                {adminError && (
+                  <p className="text-xs text-rose-500 font-medium px-1 mt-1">{adminError}</p>
+                )}
+                <p className="text-[10px] text-slate-400 px-1 mt-1">
+                  Când e activ: fără limită de distanță, fără cooldown între rapoarte.
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </Section>
       </div>
     </motion.div>

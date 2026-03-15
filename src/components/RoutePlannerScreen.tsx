@@ -11,10 +11,12 @@ interface RoutePlannerScreenProps {
   onStopNav: () => void; distanceRemaining?: number;
   onSnapChange?: (snap: 'SEARCH' | 'ROUTES' | 'FULL') => void;
   autoNavigate?: boolean;
-  /** Called when the component triggers a reroute — parent should call onDrawRoute + onStartNav */
   onReroute?: (dest: SearchResult) => void;
-  /** Whether a reroute is currently in progress (shows spinner in nav bar) */
   isRerouting?: boolean;
+  /** Whether the BottomNav is visible during navigation */
+  navVisible?: boolean;
+  /** Toggle the BottomNav visibility during navigation */
+  onToggleNavVisible?: () => void;
 }
 
 interface ZoneHit { reportId: string; weight: number; label: string; }
@@ -143,16 +145,20 @@ const RouteCard: React.FC<{ route: ScoredRoute; idx: number; isActive: boolean; 
 
 const NavigationBar: React.FC<{
   route: RouteInfo; destination: string; userLocation: [number, number];
-  onStop: () => void; onExpand: () => void; isRerouting?: boolean;
-}> = ({ route, destination, userLocation, onStop, onExpand, isRerouting }) => {
+  onStop: () => void; onToggleNav: () => void; navVisible: boolean; isRerouting?: boolean;
+}> = ({ route, destination, userLocation, onStop, onToggleNav, navVisible, isRerouting }) => {
   const destCoord = route.geometry?.coordinates?.[(route.geometry?.coordinates?.length ?? 1) - 1];
   const remainingDist = destCoord ? distM(userLocation[0], userLocation[1], destCoord[1], destCoord[0], cosLat(userLocation[0])) : route.distance;
   const remainingMin = Math.round(remainingDist / (4.5 * 1000 / 60));
+  const bottomVal = navVisible
+    ? 'calc(env(safe-area-inset-bottom) + 64px)'
+    : 'calc(env(safe-area-inset-bottom) + 0px)';
   return (
     <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
-      className="fixed bottom-0 left-0 right-0 z-[70]" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}>
-      <div className="mx-3 mb-3 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden">
-        <div className="flex items-center gap-3 px-4 py-3" onClick={onExpand}>
+      className="fixed left-0 right-0 z-[70]"
+      style={{ bottom: bottomVal, transition: 'bottom 0.25s cubic-bezier(0.4,0,0.2,1)', paddingBottom: 12 }}>
+      <div className="mx-3 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3">
           <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
             {isRerouting
               ? <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -160,20 +166,29 @@ const NavigationBar: React.FC<{
             }
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: isRerouting ? '#f97316' : undefined }} >
+            <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: isRerouting ? '#f97316' : '#3B49DF' }}>
               {isRerouting ? 'Recalculez traseul…' : 'Navighez'}
             </p>
             <p className="text-sm font-bold text-slate-900 truncate">{destination}</p>
           </div>
           {!isRerouting && (
-            <div className="text-right shrink-0 mr-2">
+            <div className="text-right shrink-0 mr-1">
               <p className="text-xl font-black text-slate-900 leading-none">{remainingMin}</p>
               <p className="text-[10px] text-slate-400 font-bold">min rămas</p>
             </div>
           )}
-          <ChevronUp size={16} className="text-slate-400 shrink-0" />
+          {/* Arrow: toggles the BottomNav — rotates when nav is visible */}
+          <button
+            className="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0"
+            onClick={e => { e.stopPropagation(); onToggleNav(); }}
+          >
+            <motion.div animate={{ rotate: navVisible ? 180 : 0 }} transition={{ duration: 0.2 }}>
+              <ChevronUp size={16} className="text-slate-500" />
+            </motion.div>
+          </button>
         </div>
-        <button onClick={e => { e.stopPropagation(); onStop(); }} className="w-full py-2.5 border-t border-slate-100 text-xs font-black text-rose-500 uppercase tracking-widest">
+        <button onClick={e => { e.stopPropagation(); onStop(); }}
+          className="w-full py-2.5 border-t border-slate-100 text-xs font-black text-rose-500 uppercase tracking-widest">
           Oprește navigarea
         </button>
       </div>
@@ -184,7 +199,7 @@ const NavigationBar: React.FC<{
 export const RoutePlannerScreen = ({
   onClose, t, userLocation, reports, onDrawRoute, onStartNav,
   initialDest, isNavigating, activeRoute, onStopNav, onSnapChange, autoNavigate,
-  onReroute, isRerouting,
+  onReroute, isRerouting, navVisible, onToggleNavVisible,
 }: RoutePlannerScreenProps) => {
   const [query, setQuery]                   = useState(initialDest?.display_name ?? '');
   const [searchResults, setSearchResults]   = useState<SearchResult[]>([]);
@@ -279,11 +294,15 @@ export const RoutePlannerScreen = ({
     }
   }, [initialDest]);
 
-  useEffect(() => { if (routes.length > 0 && !loading) snapTo('ROUTES'); }, [routes.length, loading]);
+  useEffect(() => { if (routes.length > 0 && !loading && !isNavigating) snapTo('ROUTES'); }, [routes.length, loading, isNavigating]);
   useEffect(() => { if (isFocused && !selectedDest) snapTo('FULL'); }, [isFocused, selectedDest]);
   useEffect(() => {
-    if (isNavigating) { setSheetHeight(0); setSnapState('SEARCH'); onSnapChange?.('SEARCH'); }
-    else if (navIdx >= 0 && routes.length > 0) snapTo('ROUTES');
+    if (isNavigating) {
+      // During navigation: collapse sheet completely — only NavigationBar is shown
+      setSheetHeight(0); setSnapState('SEARCH'); onSnapChange?.('SEARCH');
+    } else if (navIdx >= 0 && routes.length > 0) {
+      snapTo('ROUTES');
+    }
   }, [isNavigating]);
 
   useEffect(() => {
@@ -349,6 +368,7 @@ export const RoutePlannerScreen = ({
 
   return (
     <>
+      {/* Bottom sheet — hidden completely during navigation */}
       <div className="fixed left-0 right-0 bottom-0 pointer-events-none"
         style={{
           height: `calc(${sheetHeight}px + env(safe-area-inset-bottom))`,
@@ -384,7 +404,8 @@ export const RoutePlannerScreen = ({
             <div className="w-12 h-1.5 rounded-full bg-slate-200" />
           </div>
 
-          {/* Search bar — onClick to avoid accidental history taps */}
+          {/* ── Search bar — hidden during navigation (already have a destination) ── */}
+          {!isNavigating && (
           <div className="px-4 pb-3 shrink-0" style={{ touchAction: 'auto' }}>
             <div className="flex items-center gap-3 bg-slate-50 rounded-2xl px-4 border border-slate-200" style={{ height: 52 }}
               onClick={() => { if (snapState === 'SEARCH') snapTo('FULL'); }}>
@@ -403,8 +424,9 @@ export const RoutePlannerScreen = ({
               )}
             </div>
           </div>
+          )} {/* end !isNavigating search bar */}
 
-          {/* Content — pointer-events blocked during open animation */}
+          {/* Content — show during navigation when sheet is open, otherwise normal rules */}
           {snapState !== 'SEARCH' && (
             <div className="flex-1 overflow-y-auto px-4 pb-8 flex flex-col gap-4"
               style={{ pointerEvents: contentReady ? 'auto' : 'none' }}>
@@ -480,7 +502,15 @@ export const RoutePlannerScreen = ({
 
       <AnimatePresence>
         {navIdx >= 0 && activeRoute && selectedDest && (
-          <NavigationBar route={activeRoute} destination={selectedDest.display_name} userLocation={userLocation} onStop={handleStopNav} onExpand={() => snapTo('ROUTES')} isRerouting={isRerouting} />
+          <NavigationBar
+            route={activeRoute}
+            destination={selectedDest.display_name}
+            userLocation={userLocation}
+            onStop={handleStopNav}
+            onToggleNav={() => onToggleNavVisible?.()}
+            navVisible={navVisible ?? false}
+            isRerouting={isRerouting}
+          />
         )}
       </AnimatePresence>
     </>

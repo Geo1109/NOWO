@@ -10,6 +10,8 @@ interface EmergencyButtonProps {
   t: any;
   userLocation: [number, number] | null;
   onTimerActive?: (active: boolean) => void;
+  /** Called on each tap of the bell button — parent counts 5 rapid taps for SOS */
+  onSosTap?: () => void;
 }
 
 async function showLocalNotification(title: string, body: string) {
@@ -32,7 +34,7 @@ async function requestPermission(): Promise<boolean> {
 
 const PRESETS = [5, 15, 30];
 
-export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyButtonProps) => {
+export const EmergencyButton = ({ t, userLocation, onTimerActive, onSosTap }: EmergencyButtonProps) => {
   const [isExpanded, setIsExpanded]     = useState(false);
   const [customTime, setCustomTime]     = useState('');
   const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
@@ -102,7 +104,7 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
     <div className="fixed right-5 z-40 flex flex-col items-end gap-3" style={{ top: 'calc(env(safe-area-inset-top) + 88px)' }}>
 
       {/* Bell button — replaces Shield */}
-      <button onClick={() => setIsExpanded(!isExpanded)}
+      <button onClick={() => { setIsExpanded(!isExpanded); onSosTap?.(); }}
         className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-xl transition-all duration-300 relative"
         style={{ background: isActive ? '#ef4444' : 'white', border: isActive ? 'none' : '1.5px solid #fecaca', boxShadow: isActive ? '0 4px 20px rgba(239,68,68,0.4)' : '0 2px 12px rgba(0,0,0,0.1)' }}>
         {timerSeconds !== null && (
