@@ -99,7 +99,7 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
   const progress = timerSeconds !== null && totalSeconds ? timerSeconds / totalSeconds : 0;
 
   return (
-    <div className="fixed top-24 right-6 z-40 flex flex-col items-end gap-3">
+    <div className="fixed right-5 z-40 flex flex-col items-end gap-3" style={{ top: 'calc(env(safe-area-inset-top) + 88px)' }}>
 
       {/* Bell button — replaces Shield */}
       <button onClick={() => setIsExpanded(!isExpanded)}
@@ -132,11 +132,19 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
       {/* Panel */}
       <AnimatePresence>
         {isExpanded && (
-          <motion.div
+          <>
+            {/* Transparent full-screen backdrop — tap anywhere outside to close */}
+            <div
+              className="fixed inset-0 z-30"
+              style={{ background: 'transparent' }}
+              onClick={() => setIsExpanded(false)}
+            />
+
+            <motion.div
             initial={{ opacity: 0, y: -8, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-            className="bg-white rounded-3xl shadow-2xl overflow-hidden"
+            className="bg-white rounded-3xl shadow-2xl overflow-hidden relative z-40"
             style={{ border: '1.5px solid #fee2e2', width: 'min(252px, calc(100vw - 60px))' }}>
 
             <div className="flex items-center justify-between px-4 pt-4 pb-3"
@@ -248,6 +256,7 @@ export const EmergencyButton = ({ t, userLocation, onTimerActive }: EmergencyBut
               )}
             </div>
           </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>

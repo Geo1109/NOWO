@@ -312,7 +312,7 @@ export const SettingsScreen = ({ onClose, t, onOpenMenu }: SettingsScreenProps) 
                   <input
                     type="email"
                     inputMode="email"
-                    placeholder="Email utilizator SafeWalk..."
+                    placeholder="Email utilizator..."
                     value={searchEmail}
                     onChange={e => { setSearchEmail(e.target.value); setSearchError(''); setSearchResult(null); }}
                     onKeyDown={e => e.key === 'Enter' && searchUser()}

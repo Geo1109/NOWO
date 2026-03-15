@@ -1,6 +1,6 @@
-import React, { useRef } from 'react';
-import { motion } from 'motion/react';
+import React from 'react';
 import { Navigation, Phone, Clock, MapPin, Globe, ShoppingCart, Shield, Stethoscope, Store } from 'lucide-react';
+import { SlideSheet } from './SlideSheet';
 import { SafeSpace } from '../types';
 
 interface SpaceDetailsModalProps {
@@ -54,144 +54,99 @@ export const SpaceDetailsModal = ({ space, onClose, onNavigate }: SpaceDetailsMo
   const schedule = parseOpeningHours(ex.openingHours);
   const today    = new Date().getDay();
 
-  // ── Drag-to-close (same pattern as ReportModal — JS only, no Framer exit) ──
-  const sheetRef   = useRef<HTMLDivElement>(null);
-  const dragStart  = useRef(0);
-  const dragDelta  = useRef(0);
-  const closingRef = useRef(false);
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (closingRef.current) return;
-    dragStart.current = e.touches[0].clientY; dragDelta.current = 0;
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (closingRef.current) return;
-    const d = e.touches[0].clientY - dragStart.current;
-    dragDelta.current = d;
-    if (d > 0 && sheetRef.current) {
-      sheetRef.current.style.transition = 'none';
-      sheetRef.current.style.transform = `translateY(${d}px)`;
-    }
-  };
-  const onTouchEnd = () => {
-    if (closingRef.current) return;
-    if (dragDelta.current > 80) {
-      closingRef.current = true;
-      if (sheetRef.current) {
-        sheetRef.current.style.transition = 'transform 0.22s ease-in';
-        sheetRef.current.style.transform = 'translateY(110%)';
-      }
-      setTimeout(onClose, 220);
-    } else {
-      if (sheetRef.current) {
-        sheetRef.current.style.transition = 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
-        sheetRef.current.style.transform = 'translateY(0)';
-      }
-    }
-    dragDelta.current = 0;
-  };
-
   return (
-    <>
-      {/* Backdrop — tap outside to close */}
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        transition={{ duration: 0.2 }}
-        className="fixed inset-0 z-[79]"
-        style={{ background: 'rgba(0,0,0,0.35)' }}
-        onClick={onClose}
-      />
+    <SlideSheet onClose={onClose} zIndex={80}>
+      {/* Drag handle */}
+      <div className="flex justify-center pt-3 mb-0">
+        <div style={{ width: 40, height: 4, borderRadius: 4, background: 'rgba(255,255,255,0.4)' }} />
+      </div>
 
-      {/* Sheet — NO exit prop; manual JS handles close animation */}
-      <motion.div
-        ref={sheetRef}
-        initial={{ y: '100%' }}
-        animate={{ y: 0 }}
-        transition={{ type: 'spring', damping: 34, stiffness: 360, mass: 0.8 }}
-        className="fixed bottom-0 left-0 right-0 z-[80] bg-white overflow-hidden"
-        style={{
-          borderRadius: '24px 24px 0 0',
-          boxShadow: '0 -4px 40px rgba(0,0,0,0.13)',
-          paddingBottom: 'env(safe-area-inset-bottom)',
-        }}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-      >
-        {/* Header */}
-        <div style={{ background: cfg.color }} className="px-6 pt-3 pb-6">
-          <div className="flex justify-center mb-4">
-            <div className="w-10 h-1 bg-white/40 rounded-full" />
+      {/* Coloured header */}
+      <div style={{ background: cfg.color, padding: '8px 20px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 48, height: 48, borderRadius: 16, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Icon size={22} color="white" />
           </div>
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.2)' }}>
-              <Icon size={22} className="text-white" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.6)', marginBottom: 2 }}>
+              {cfg.label}
+            </p>
+            <p style={{ fontSize: 17, fontWeight: 700, color: 'white', margin: 0, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+              {space.name}
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+          <Pill color={cfg.color}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'white', display: 'inline-block' }} /> Deschis acum
+          </Pill>
+          {dist && <Pill color={cfg.color}><Navigation size={10} color="white" />{dist}</Pill>}
+        </div>
+      </div>
+
+      {/* Info */}
+      <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {ex.address && <InfoRow icon={<MapPin size={14} />} color={cfg.color}><span style={{ fontSize: 13, color: '#475569', lineHeight: 1.4 }}>{ex.address}</span></InfoRow>}
+
+        {schedule.length > 0 && (
+          <InfoRow icon={<Clock size={14} />} color={cfg.color}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, width: '100%' }}>
+              {schedule.map((d: any, i: number) => {
+                const isToday = i === (today === 0 ? 6 : today - 1);
+                return (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span style={{ color: isToday ? '#0f172a' : '#64748b', fontWeight: isToday ? 700 : 400 }}>{d.day}</span>
+                    <span style={{ color: isToday ? '#0f172a' : '#64748b', fontWeight: isToday ? 700 : 500 }}>{d.hours}</span>
+                  </div>
+                );
+              })}
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-white/60 text-[11px] font-medium uppercase tracking-widest mb-0.5">{cfg.label}</p>
-              <h2 className="text-white leading-snug truncate" style={{ fontSize: '18px', fontWeight: 600 }}>{space.name}</h2>
-            </div>
-          </div>
-          <div className="flex gap-2 mt-4 flex-wrap">
-            <Pill><span className="w-1.5 h-1.5 bg-white rounded-full" /> Deschis acum</Pill>
-            {dist && <Pill><Navigation size={10} />{dist}</Pill>}
-          </div>
-        </div>
+          </InfoRow>
+        )}
 
-        {/* Info rows */}
-        <div className="px-6 py-4 flex flex-col gap-3">
-          {ex.address && <InfoRow icon={<MapPin size={15} />} color={cfg.color}>{ex.address}</InfoRow>}
-          {schedule.length > 0 && (
-            <InfoRow icon={<Clock size={15} />} color={cfg.color}>
-              <div className="flex flex-col gap-1 text-sm w-full">
-                {schedule.map((d: any, i: number) => {
-                  const isToday = i === (today === 0 ? 6 : today - 1);
-                  return (
-                    <div key={i} className="flex justify-between">
-                      <span className={isToday ? 'font-semibold text-black' : 'text-slate-500'}>{d.day}</span>
-                      <span className={isToday ? 'font-semibold' : 'font-medium'}>{d.hours}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </InfoRow>
-          )}
-          {ex.phone && (
-            <InfoRow icon={<Phone size={15} />} color={cfg.color}>
-              <a href={`tel:${ex.phone}`} style={{ color: cfg.color }} className="font-semibold">{ex.phone}</a>
-            </InfoRow>
-          )}
-          {ex.website && (
-            <InfoRow icon={<Globe size={15} />} color={cfg.color}>
-              <a href={ex.website} target="_blank" rel="noreferrer" style={{ color: cfg.color }} className="font-semibold truncate block">
-                {ex.website.replace(/^https?:\/\//, '').split('/')[0]}
-              </a>
-            </InfoRow>
-          )}
-        </div>
+        {ex.phone && (
+          <InfoRow icon={<Phone size={14} />} color={cfg.color}>
+            <a href={`tel:${ex.phone}`} style={{ color: cfg.color, fontWeight: 600, fontSize: 13, textDecoration: 'none' }}>{ex.phone}</a>
+          </InfoRow>
+        )}
 
-        <div className="px-6 pb-6 pt-1">
-          <button onClick={onNavigate} style={{ background: cfg.color }}
-            className="w-full h-14 rounded-2xl text-white font-bold text-base flex items-center justify-center gap-2.5 active:scale-95 transition-transform">
-            <Navigation size={19} /> Navighează aici
-          </button>
-        </div>
-      </motion.div>
-    </>
+        {ex.website && (
+          <InfoRow icon={<Globe size={14} />} color={cfg.color}>
+            <a href={ex.website} target="_blank" rel="noreferrer"
+              style={{ color: cfg.color, fontWeight: 600, fontSize: 13, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+              {ex.website.replace(/^https?:\/\//, '').split('/')[0]}
+            </a>
+          </InfoRow>
+        )}
+      </div>
+
+      {/* Navigate button */}
+      <div style={{ padding: '4px 20px 20px' }}>
+        <button onClick={onNavigate}
+          style={{ width: '100%', height: 54, borderRadius: 16, background: cfg.color, color: 'white', fontWeight: 700, fontSize: 15, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer' }}>
+          <Navigation size={18} color="white" /> Navighează aici
+        </button>
+      </div>
+    </SlideSheet>
   );
 };
 
-function Pill({ children }: { children: React.ReactNode }) {
+function Pill({ children, color }: { children: React.ReactNode; color: string }) {
   return (
-    <span className="px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 text-white"
-      style={{ background: 'rgba(255,255,255,0.22)' }}>{children}</span>
+    <span style={{ padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 600, color: 'white', background: 'rgba(255,255,255,0.22)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      {children}
+    </span>
   );
 }
+
 function InfoRow({ icon, color, children }: { icon: React.ReactNode; color: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-3">
-      <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ color, background: color + '15' }}>{icon}</div>
-      <div className="text-sm text-slate-600 pt-1.5 leading-snug flex-1 min-w-0">{children}</div>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ width: 32, height: 32, borderRadius: 10, background: color + '18', color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0, paddingTop: 6 }}>{children}</div>
     </div>
   );
 }

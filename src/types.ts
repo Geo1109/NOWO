@@ -28,6 +28,12 @@ export interface Report {
   expiresAt?: string;
   /** Set to true by Cloud Function or client-side expiry check */
   expired?: boolean;
+  /** UIDs of users who created or confirmed this report (prevents duplicate reporting) */
+  reportedBy?: string[];
+  /** Number of decline votes — if >= weight*1.5 the zone auto-expires */
+  declineCount?: number;
+  /** UID of the user who originally created the report */
+  reporterId?: string;
 }
 
 export interface SafeSpace {

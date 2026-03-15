@@ -1,76 +1,93 @@
-import React, { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useEffect, useRef, useState } from "react";
 
 interface LoadingScreenProps {
   onFinish?: () => void;
-  /** Total visible time in seconds before the fade-out begins. Default: 2 */
+  /** Seconds the image is held before fade-to-black starts. Default: 1.5 */
   duration?: number;
 }
 
 export const LoadingScreen: React.FC<LoadingScreenProps> = ({
   onFinish,
-  duration = 2,
+  duration = 1.5,
 }) => {
-  const [image, setImage] = useState<string | null>(null);
-  const [phase, setPhase] = useState<"visible" | "transition" | "done">("visible");
+  // Pick image once, stably
+  const [image] = useState(() => {
+    const imgs = ["/loading-male.png", "/loading-female.png"];
+    return imgs[Math.floor(Math.random() * imgs.length)];
+  });
+
+  const wrapRef    = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const calledRef  = useRef(false);
 
   useEffect(() => {
-    const images = ["/loading-male.png", "/loading-female.png"];
-    setImage(images[Math.floor(Math.random() * images.length)]);
+    // The component is rendered with opacity:1 immediately — no fade-in, no flash.
+    // After `duration` ms: fade the black overlay on top → then unmount.
+    const t1 = setTimeout(() => {
+      const ov = overlayRef.current;
+      if (!ov) return;
+      ov.style.transition = `opacity ${Math.min(duration * 0.5, 0.6)}s ease`;
+      ov.style.opacity = '1';
+    }, duration * 1000);
 
-    // Start fade-out after `duration` seconds
-    const t1 = setTimeout(() => setPhase("transition"), duration * 1000);
-    // Done after fade (1 s — kept short)
     const t2 = setTimeout(() => {
-      setPhase("done");
-      onFinish?.();
-    }, duration * 1000 + 1000);
+      if (!calledRef.current) {
+        calledRef.current = true;
+        onFinish?.();
+      }
+    }, duration * 1000 + Math.min(duration * 500, 650));
 
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [duration, onFinish]);
-
-  if (!image || phase === "done") return null;
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <AnimatePresence mode="wait">
+    <div
+      ref={wrapRef}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 9999,
+        background: '#000',
+        // No opacity animation on the container — prevents flash
+      }}
+    >
+      {/* Background image — fills the screen immediately */}
+      <img
+        src={image}
+        alt=""
+        draggable={false}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: 'block',
+        }}
+      />
+
+      {/* Subtle dark vignette — always present */}
+      <div style={{
+        position: 'absolute',
+        inset: 0,
+        background: 'radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.5) 100%)',
+        pointerEvents: 'none',
+      }} />
+
+      {/* Fade-to-black overlay — starts transparent, JS transitions it to opaque */}
       <div
-        key="loading-screen"
-        className="fixed inset-0 z-[999] overflow-hidden"
-        style={{ background: "#000" }}
-      >
-        <motion.img
-          src={image}
-          alt="Loading"
-          className="w-full h-full object-cover"
-          draggable={false}
-          initial={{ opacity: 0, scale: 1.04 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
-          style={{ display: "block" }}
-        />
-
-        {/* Vignette */}
-        <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.55) 100%)", pointerEvents: "none" }} />
-
-        {/* App name */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.6 }}
-          style={{ position: "absolute", bottom: "12%", left: 0, right: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 8, pointerEvents: "none" }}
-        >
-          <p style={{ color: "white", fontSize: 32, fontWeight: 900, letterSpacing: "-0.5px", textShadow: "0 2px 12px rgba(0,0,0,0.5)", fontFamily: "'Syne', sans-serif" }}>Nowo</p>
-          <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 13, fontWeight: 500, letterSpacing: "0.5px" }}>Fii în siguranță. Oriunde.</p>
-        </motion.div>
-
-        {/* Fade-to-black overlay */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={phase === "transition" ? { opacity: 1 } : { opacity: 0 }}
-          transition={phase === "transition" ? { duration: 1, ease: [0.4, 0, 0.2, 1] } : { duration: 0 }}
-          style={{ position: "absolute", inset: 0, background: "#000", pointerEvents: "none" }}
-        />
-      </div>
-    </AnimatePresence>
+        ref={overlayRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: '#000',
+          opacity: 0,
+          pointerEvents: 'none',
+        }}
+      />
+    </div>
   );
 };
