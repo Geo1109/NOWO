@@ -79,6 +79,42 @@ function createUserMarkerHtml(heading: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Route geometry helpers
+// ---------------------------------------------------------------------------
+
+/** Find the index of the closest coordinate in a GeoJSON LineString to a point */
+function closestCoordIndex(coords: number[][], lat: number, lng: number): number {
+  const cos = Math.cos((lat * Math.PI) / 180);
+  let minDist = Infinity, minIdx = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const d = Math.sqrt(
+      Math.pow((lat - coords[i][1]) * 111320, 2) +
+      Math.pow((lng - coords[i][0]) * 111320 * cos, 2)
+    );
+    if (d < minDist) { minDist = d; minIdx = i; }
+  }
+  return minIdx;
+}
+
+/** Distance from a point to the closest point on a LineString */
+function distToRoute(coords: number[][], lat: number, lng: number): number {
+  if (!coords.length) return Infinity;
+  const cos = Math.cos((lat * Math.PI) / 180);
+  let minDist = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [lng1, lat1] = coords[i], [lng2, lat2] = coords[i + 1];
+    // Project point onto segment
+    const dx = (lng2 - lng1) * 111320 * cos, dy = (lat2 - lat1) * 111320;
+    const len2 = dx * dx + dy * dy;
+    const px = (lng - lng1) * 111320 * cos, py = (lat - lat1) * 111320;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, (px * dx + py * dy) / len2)) : 0;
+    const nearDist = Math.sqrt(Math.pow(px - t * dx, 2) + Math.pow(py - t * dy, 2));
+    if (nearDist < minDist) minDist = nearDist;
+  }
+  return minDist;
+}
+
 export default function App() {
   return <ErrorBoundary FallbackComponent={ErrorFallback}><AppContent /></ErrorBoundary>;
 }
@@ -114,6 +150,8 @@ function AppContent() {
   const [currentUser, setCurrentUser]               = useState(auth.currentUser);
   const [sheetSnap, setSheetSnap]                   = useState<'SEARCH' | 'ROUTES' | 'FULL'>('SEARCH');
   const [mapPanned, setMapPanned]                   = useState(false);
+  const [isRerouting, setIsRerouting]               = useState(false);
+  const [navDestination, setNavDestination]         = useState<SearchResult | null>(null);
   const [navResetKey, setNavResetKey] = useState(0);
   const [reportFeedback, setReportFeedback]         = useState<string | null>(null);
 
@@ -139,10 +177,20 @@ function AppContent() {
   const safeSpacesLayerRef      = useRef<any>(null);
   const reportLocationMarkerRef = useRef<any>(null);
   const walkedPolylineRef       = useRef<any>(null);
+  const remainingLayerRef       = useRef<any>(null);  // colored remaining-route layer
   const walkedCoordsRef         = useRef<[number, number][]>([]);
+  const lastRerouteRef          = useRef<number>(0);  // timestamp of last reroute
+  const REROUTE_COOLDOWN_MS     = 12_000;             // min 12s between reroutes
+  const OFF_ROUTE_THRESHOLD_M   = 35;                 // metres off-route to trigger reroute
+  const activeRouteRef          = useRef<RouteInfo | null>(null);
+  const navDestinationRef       = useRef<SearchResult | null>(null);
+  const isReroutingRef          = useRef(false);
+  const gpsReadyRef             = useRef(false);       // avoids stale closure on gpsReady
+  const showSafeSpacesRef       = useRef(showSafeSpaces); // avoids stale closure on showSafeSpaces
   const reportingActiveRef      = useRef(false);
   const lastSafeSpacesFetchRef  = useRef('');
   const geoWatchIdRef           = useRef<string | null>(null);
+  const geoPollRef              = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportsRef              = useRef<Report[]>([]);
   const isNavigatingRef         = useRef(isNavigating);
   const mapPannedRef            = useRef(false);
@@ -156,6 +204,10 @@ function AppContent() {
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { mapPannedRef.current = mapPanned; }, [mapPanned]);
   useEffect(() => { userLocationRef.current = userLocation; }, [userLocation]);
+  useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
+  useEffect(() => { navDestinationRef.current = navDestination; }, [navDestination]);
+  useEffect(() => { isReroutingRef.current = isRerouting; }, [isRerouting]);
+  useEffect(() => { showSafeSpacesRef.current = showSafeSpaces; }, [showSafeSpaces]);
 
   // ── Heading with dead-zone smoothing ─────────────────────────────────────
   useEffect(() => {
@@ -233,92 +285,165 @@ function AppContent() {
     else safeSpacesLayerRef.current?.clearLayers();
   }, [showSafeSpaces, userLocation]);
 
-  // ── Position handler — called by both initial fetch and watchPosition ─────
-  const handlePosition = useCallback((lat: number, lng: number) => {
-    const newPos: [number, number] = [lat, lng];
-    setUserLocation(newPos);
+  // ── Position handler ──────────────────────────────────────────────────────
+  // We store the latest handler in a ref so watchPosition always calls the
+  // current version — avoids the stale-closure bug where gpsReady / showSafeSpaces
+  // change but the watch still uses the old captured function.
+  const handlePositionRef = useRef<(lat: number, lng: number) => void>(() => {});
 
-    const L = (window as any).L;
-    if (!L || !mapRef.current) return;
+  useEffect(() => {
+    handlePositionRef.current = (lat: number, lng: number) => {
+      const newPos: [number, number] = [lat, lng];
+      setUserLocation(newPos);
 
-    const icon = L.divIcon({
-      className: '', html: createUserMarkerHtml(Math.round(displayHeadingRef.current)),
-      iconSize: [USER_MARKER_SIZE, USER_MARKER_SIZE],
-      iconAnchor: [USER_MARKER_SIZE / 2, USER_MARKER_SIZE / 2],
-    });
+      const L = (window as any).L;
+      if (!L || !mapRef.current) return;
 
-    if (userMarkerRef.current) {
-      userMarkerRef.current.setLatLng(newPos);
-      userMarkerRef.current.setIcon(icon);
-    } else {
-      userMarkerRef.current = L.marker(newPos, { icon, zIndexOffset: 1000 }).addTo(mapRef.current);
-    }
+      const icon = L.divIcon({
+        className: '',
+        html: createUserMarkerHtml(Math.round(displayHeadingRef.current)),
+        iconSize: [USER_MARKER_SIZE, USER_MARKER_SIZE],
+        iconAnchor: [USER_MARKER_SIZE / 2, USER_MARKER_SIZE / 2],
+      });
 
-    // First fix: fly the map to the user's actual location at a good zoom level
-    if (!gpsReady) {
-      setGpsReady(true);
-      mapRef.current.setView(newPos, 16, { animate: false });
-    }
-
-    if (isNavigatingRef.current && !mapPannedRef.current) {
-      mapRef.current.panTo(newPos);
-    }
-
-    if (isNavigatingRef.current) {
-      walkedCoordsRef.current = [...walkedCoordsRef.current, newPos];
-      if (walkedPolylineRef.current) {
-        walkedPolylineRef.current.setLatLngs(walkedCoordsRef.current);
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setLatLng(newPos);
+        userMarkerRef.current.setIcon(icon);
       } else {
-        walkedPolylineRef.current = L.polyline(walkedCoordsRef.current, {
-          color: '#94a3b8', weight: 7, opacity: 0.7, lineCap: 'round', lineJoin: 'round',
-        }).addTo(mapRef.current);
-        routeLayerRef.current?.bringToFront();
+        userMarkerRef.current = L.marker(newPos, { icon, zIndexOffset: 1000 }).addTo(mapRef.current);
       }
-    }
 
-    const cu = auth.currentUser;
-    if (cu) updateDoc(doc(db, 'users', cu.uid), { lastLat: lat, lastLng: lng }).catch(() => {});
-
-    reportsRef.current.forEach(report => {
-      const dist = haversineM(newPos, [report.lat, report.lng]);
-      if (dist < 100) {
-        const msg = `⚠️ Zonă periculoasă la ${Math.round(dist)} m (${report.categories[0] || ''})`;
-        setProximityAlert(prev => prev === msg ? prev : msg);
+      // Fly to real location on the very first GPS fix
+      if (!gpsReadyRef.current) {
+        gpsReadyRef.current = true;
+        setGpsReady(true);
+        mapRef.current.setView(newPos, 16, { animate: false });
       }
-    });
 
-    if (showSafeSpaces) fetchSafeSpaces(lat, lng);
-  }, [gpsReady, showSafeSpaces]);
+      if (isNavigatingRef.current && !mapPannedRef.current) {
+        mapRef.current.panTo(newPos);
+      }
 
-  // ── Geolocation watch ────────────────────────────────────────────────────
+      if (isNavigatingRef.current) {
+        walkedCoordsRef.current = [...walkedCoordsRef.current, newPos];
+        if (walkedPolylineRef.current) {
+          walkedPolylineRef.current.setLatLngs(walkedCoordsRef.current);
+        } else {
+          walkedPolylineRef.current = L.polyline(walkedCoordsRef.current, {
+            color: '#94a3b8', weight: 7, opacity: 0.7, lineCap: 'round', lineJoin: 'round',
+          }).addTo(mapRef.current);
+        }
+
+        const routeCoords: number[][] = activeRouteRef.current?.geometry?.coordinates ?? [];
+        if (routeCoords.length > 1 && remainingLayerRef.current) {
+          const closestIdx = closestCoordIndex(routeCoords, lat, lng);
+          const remaining = routeCoords.slice(closestIdx);
+          if (remaining.length >= 2) {
+            remainingLayerRef.current.setLatLngs(remaining.map(([rLng, rLat]) => [rLat, rLng]));
+          }
+        }
+
+        const now = Date.now();
+        if (
+          activeRouteRef.current &&
+          navDestinationRef.current &&
+          !isReroutingRef.current &&
+          now - lastRerouteRef.current > REROUTE_COOLDOWN_MS
+        ) {
+          const offDist = distToRoute(routeCoords, lat, lng);
+          if (offDist > OFF_ROUTE_THRESHOLD_M) {
+            triggerReroute(newPos);
+          }
+        }
+
+        routeLayerRef.current?.bringToFront?.();
+      }
+
+      const cu = auth.currentUser;
+      if (cu) updateDoc(doc(db, 'users', cu.uid), { lastLat: lat, lastLng: lng }).catch(() => {});
+
+      reportsRef.current.forEach(report => {
+        const dist = haversineM(newPos, [report.lat, report.lng]);
+        if (dist < 100) {
+          const msg = `⚠️ Zonă periculoasă la ${Math.round(dist)} m (${report.categories[0] || ''})`;
+          setProximityAlert(prev => prev === msg ? prev : msg);
+        }
+      });
+
+      if (showSafeSpacesRef.current) fetchSafeSpaces(lat, lng);
+    };
+  }); // no deps — always up-to-date on every render
+
+  // ── Geolocation — polling + watch hybrid ─────────────────────────────────
+  // watchPosition on Android can silently stop delivering callbacks (FusedLocationProvider
+  // throttling, battery saver, etc.). We add a setInterval poll as a guaranteed fallback.
   const startGeoWatch = useCallback(async () => {
+    const onPos = (lat: number, lng: number) => handlePositionRef.current(lat, lng);
+
     if (Capacitor.isNativePlatform()) {
       try {
         const { location } = await Geolocation.requestPermissions();
-        if (location !== 'granted') return;
-        const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
-        handlePosition(pos.coords.latitude, pos.coords.longitude);
-        geoWatchIdRef.current = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 10000 },
-          (p, e) => { if (e || !p) return; handlePosition(p.coords.latitude, p.coords.longitude); }
-        );
-      } catch (e) { console.error(e); }
+        if (location !== 'granted') {
+          console.warn('[GPS] Permission denied');
+          return;
+        }
+
+        // Immediate first fix
+        const first = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
+        onPos(first.coords.latitude, first.coords.longitude);
+
+        // watchPosition — fires when device reports movement
+        try {
+          geoWatchIdRef.current = await Geolocation.watchPosition(
+            { enableHighAccuracy: true },
+            (p, e) => {
+              if (e) { console.warn('[GPS] watch error', e); return; }
+              if (!p) return;
+              onPos(p.coords.latitude, p.coords.longitude);
+            }
+          );
+        } catch (watchErr) {
+          console.warn('[GPS] watchPosition failed, using poll only', watchErr);
+        }
+
+        // Poll every 3 seconds as guaranteed fallback
+        geoPollRef.current = setInterval(async () => {
+          try {
+            const p = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
+            onPos(p.coords.latitude, p.coords.longitude);
+          } catch (e) {
+            console.warn('[GPS] poll error', e);
+          }
+        }, 3000);
+
+      } catch (e) { console.error('[GPS] init error', e); }
+
     } else {
+      // Web browser
       if (!navigator.geolocation) return;
-      // Get first fix immediately
+
       navigator.geolocation.getCurrentPosition(
-        p => handlePosition(p.coords.latitude, p.coords.longitude),
+        p => onPos(p.coords.latitude, p.coords.longitude),
         () => {},
         { enableHighAccuracy: true, timeout: 8000 }
       );
-      // Then watch
+
       navigator.geolocation.watchPosition(
-        p => handlePosition(p.coords.latitude, p.coords.longitude),
-        console.error,
-        { enableHighAccuracy: true }
+        p => onPos(p.coords.latitude, p.coords.longitude),
+        err => console.warn('[GPS] web watch error', err),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
       );
+
+      // Also poll on web for devices where watchPosition is unreliable
+      geoPollRef.current = setInterval(() => {
+        navigator.geolocation.getCurrentPosition(
+          p => onPos(p.coords.latitude, p.coords.longitude),
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 2000 }
+        );
+      }, 3000);
     }
-  }, [handlePosition]);
+  }, []); // stable
 
   // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -345,6 +470,10 @@ function AppContent() {
     return () => {
       if (geoWatchIdRef.current && Capacitor.isNativePlatform()) {
         Geolocation.clearWatch({ id: geoWatchIdRef.current! });
+      }
+      if (geoPollRef.current) {
+        clearInterval(geoPollRef.current);
+        geoPollRef.current = null;
       }
     };
   }, [startGeoWatch]);
@@ -446,34 +575,104 @@ function AppContent() {
     }
   }, [reports, safeSpaces, showSafeSpaces, reportLocation]);
 
-  // ── Navigation ────────────────────────────────────────────────────────────
+  // ── Route / navigation ─────────────────────────────────────────────────────
   const drawRoute = (route: RouteInfo) => {
     const L = (window as any).L;
+    if (!mapRef.current) return;
+
+    // Remove old layers
     if (routeLayerRef.current) mapRef.current.removeLayer(routeLayerRef.current);
+    if (remainingLayerRef.current) mapRef.current.removeLayer(remainingLayerRef.current);
+
+    const color = route.type === 'safe' ? COLORS.safe : COLORS.primary;
+
+    // Full route as GeoJSON (for initial display and walked-trail splitting)
     routeLayerRef.current = L.geoJSON(route.geometry, {
-      style: { color: route.type === 'safe' ? COLORS.safe : COLORS.primary, weight: 8, opacity: 0.9, lineCap: 'round', lineJoin: 'round' },
+      style: { color: '#cbd5e1', weight: 8, opacity: 0.5, lineCap: 'round', lineJoin: 'round' },
     }).addTo(mapRef.current);
-    mapRef.current.fitBounds(routeLayerRef.current.getBounds(), { padding: [80, 80] });
+
+    // Remaining-route overlay (starts as full route, shrinks as user walks)
+    const coords = (route.geometry?.coordinates ?? []) as number[][];
+    remainingLayerRef.current = L.polyline(
+      coords.map(([lng, lat]) => [lat, lng]),
+      { color, weight: 8, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }
+    ).addTo(mapRef.current);
+
+    mapRef.current.fitBounds(remainingLayerRef.current.getBounds(), { padding: [80, 80] });
     setActiveRoute(route);
   };
 
-  const startNavigation = (route?: RouteInfo) => {
+  // Silent background reroute — doesn't disrupt navigation UI
+  const triggerReroute = useCallback(async (currentPos: [number, number]) => {
+    const dest = navDestinationRef.current;
+    if (!dest || isReroutingRef.current) return;
+
+    lastRerouteRef.current = Date.now();
+    setIsRerouting(true);
+    isReroutingRef.current = true;
+
+    try {
+      const res = await fetch(`${API_URL}/api/walking-route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          origin: currentPos,
+          destination: [parseFloat(dest.lat), parseFloat(dest.lon)],
+          dangerZones: reportsRef.current.map(r => ({
+            lat: r.lat, lng: r.lng, weight: r.weight, radiusMeters: 20,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error('Reroute failed');
+      const data = await res.json();
+      if (!data.routes?.length) throw new Error('No routes');
+
+      const best = data.routes[0];
+      const newRoute: RouteInfo = {
+        distance: best.distance,
+        duration: Math.round(best.duration / 60),
+        geometry: best.geometry,
+        safetyScore: best.safetyScore ?? 80,
+        type: 'safe',
+        steps: best.steps ?? [],
+      };
+
+      // Reset walked trail since we're on a new route
+      walkedCoordsRef.current = [currentPos];
+      if (walkedPolylineRef.current) walkedPolylineRef.current.setLatLngs([currentPos]);
+
+      drawRoute(newRoute);
+      setActiveRoute(newRoute);
+    } catch (e) {
+      console.warn('Reroute error:', e);
+    } finally {
+      setIsRerouting(false);
+      isReroutingRef.current = false;
+    }
+  }, []);
+
+  const startNavigation = (route?: RouteInfo, dest?: SearchResult) => {
     const r = route ?? activeRoute; if (!r) return;
     setActiveRoute(r); setIsNavigating(true);
     walkedCoordsRef.current = []; setMapPanned(false);
+    if (dest) setNavDestination(dest);
     if (userLocation) mapRef.current?.setView(userLocation, 18);
   };
 
   const stopNavigation = () => {
-    setIsNavigating(false); setActiveRoute(null);
-    if (routeLayerRef.current) mapRef.current?.removeLayer(routeLayerRef.current);
+    setIsNavigating(false); setActiveRoute(null); setNavDestination(null); setIsRerouting(false);
+    isReroutingRef.current = false; lastRerouteRef.current = 0;
+    if (routeLayerRef.current) { mapRef.current?.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
+    if (remainingLayerRef.current) { mapRef.current?.removeLayer(remainingLayerRef.current); remainingLayerRef.current = null; }
     if (walkedPolylineRef.current) { mapRef.current?.removeLayer(walkedPolylineRef.current); walkedPolylineRef.current = null; }
     walkedCoordsRef.current = [];
   };
 
   const handleNavigateToSafeSpace = (space: SafeSpace) => {
+    const dest: SearchResult = { display_name: space.name, lat: space.lat.toString(), lon: space.lng.toString() };
     setSelectedSpace(null); setAutoNavigate(true);
-    setInitialDestination({ display_name: space.name, lat: space.lat.toString(), lon: space.lng.toString() });
+    setNavDestination(dest);
+    setInitialDestination(dest);
     setActiveTab('home');
   };
 
@@ -753,13 +952,17 @@ function AppContent() {
               userLocation={userLocation ?? [45.7489, 21.2087]}
               reports={reports}
               onDrawRoute={drawRoute}
-              onStartNav={startNavigation}
+              onStartNav={(route, dest) => {
+                if (dest) setNavDestination(dest);
+                startNavigation(route, dest);
+              }}
               initialDest={initialDestination}
               isNavigating={isNavigating}
               activeRoute={activeRoute}
               onStopNav={stopNavigation}
               onSnapChange={setSheetSnap}
               autoNavigate={autoNavigate}
+              isRerouting={isRerouting}
             />
             </React.Fragment>
           </motion.div>

@@ -6,11 +6,15 @@ import { API_URL } from '../config/api';
 
 interface RoutePlannerScreenProps {
   onClose: () => void; t: any; userLocation: [number, number]; reports: Report[];
-  onDrawRoute: (r: RouteInfo) => void; onStartNav: (route?: RouteInfo) => void;
+  onDrawRoute: (r: RouteInfo) => void; onStartNav: (route?: RouteInfo, dest?: SearchResult) => void;
   initialDest?: SearchResult | null; isNavigating: boolean; activeRoute: RouteInfo | null;
   onStopNav: () => void; distanceRemaining?: number;
   onSnapChange?: (snap: 'SEARCH' | 'ROUTES' | 'FULL') => void;
   autoNavigate?: boolean;
+  /** Called when the component triggers a reroute — parent should call onDrawRoute + onStartNav */
+  onReroute?: (dest: SearchResult) => void;
+  /** Whether a reroute is currently in progress (shows spinner in nav bar) */
+  isRerouting?: boolean;
 }
 
 interface ZoneHit { reportId: string; weight: number; label: string; }
@@ -137,7 +141,10 @@ const RouteCard: React.FC<{ route: ScoredRoute; idx: number; isActive: boolean; 
   );
 };
 
-const NavigationBar: React.FC<{ route: RouteInfo; destination: string; userLocation: [number, number]; onStop: () => void; onExpand: () => void; }> = ({ route, destination, userLocation, onStop, onExpand }) => {
+const NavigationBar: React.FC<{
+  route: RouteInfo; destination: string; userLocation: [number, number];
+  onStop: () => void; onExpand: () => void; isRerouting?: boolean;
+}> = ({ route, destination, userLocation, onStop, onExpand, isRerouting }) => {
   const destCoord = route.geometry?.coordinates?.[(route.geometry?.coordinates?.length ?? 1) - 1];
   const remainingDist = destCoord ? distM(userLocation[0], userLocation[1], destCoord[1], destCoord[0], cosLat(userLocation[0])) : route.distance;
   const remainingMin = Math.round(remainingDist / (4.5 * 1000 / 60));
@@ -146,12 +153,29 @@ const NavigationBar: React.FC<{ route: RouteInfo; destination: string; userLocat
       className="fixed bottom-0 left-0 right-0 z-[70]" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}>
       <div className="mx-3 mb-3 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3" onClick={onExpand}>
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0"><Navigation2 size={20} className="animate-pulse" /></div>
-          <div className="flex-1 min-w-0"><p className="text-[10px] font-black text-primary uppercase tracking-widest">Navighez</p><p className="text-sm font-bold text-slate-900 truncate">{destination}</p></div>
-          <div className="text-right shrink-0 mr-2"><p className="text-xl font-black text-slate-900 leading-none">{remainingMin}</p><p className="text-[10px] text-slate-400 font-bold">min rămas</p></div>
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
+            {isRerouting
+              ? <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              : <Navigation2 size={20} className="animate-pulse" />
+            }
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: isRerouting ? '#f97316' : undefined }} >
+              {isRerouting ? 'Recalculez traseul…' : 'Navighez'}
+            </p>
+            <p className="text-sm font-bold text-slate-900 truncate">{destination}</p>
+          </div>
+          {!isRerouting && (
+            <div className="text-right shrink-0 mr-2">
+              <p className="text-xl font-black text-slate-900 leading-none">{remainingMin}</p>
+              <p className="text-[10px] text-slate-400 font-bold">min rămas</p>
+            </div>
+          )}
           <ChevronUp size={16} className="text-slate-400 shrink-0" />
         </div>
-        <button onClick={e => { e.stopPropagation(); onStop(); }} className="w-full py-2.5 border-t border-slate-100 text-xs font-black text-rose-500 uppercase tracking-widest">Oprește navigarea</button>
+        <button onClick={e => { e.stopPropagation(); onStop(); }} className="w-full py-2.5 border-t border-slate-100 text-xs font-black text-rose-500 uppercase tracking-widest">
+          Oprește navigarea
+        </button>
       </div>
     </motion.div>
   );
@@ -160,6 +184,7 @@ const NavigationBar: React.FC<{ route: RouteInfo; destination: string; userLocat
 export const RoutePlannerScreen = ({
   onClose, t, userLocation, reports, onDrawRoute, onStartNav,
   initialDest, isNavigating, activeRoute, onStopNav, onSnapChange, autoNavigate,
+  onReroute, isRerouting,
 }: RoutePlannerScreenProps) => {
   const [query, setQuery]                   = useState(initialDest?.display_name ?? '');
   const [searchResults, setSearchResults]   = useState<SearchResult[]>([]);
@@ -315,8 +340,10 @@ export const RoutePlannerScreen = ({
   }, [onDrawRoute, snapState]);
 
   const handleStartNav = useCallback((route: ScoredRoute, idx: number) => {
-    setActiveIdx(idx); setNavIdx(idx); onDrawRoute(route); onStartNav(route); snapTo('SEARCH');
-  }, [onDrawRoute, onStartNav]);
+    setActiveIdx(idx); setNavIdx(idx); onDrawRoute(route);
+    onStartNav(route, selectedDest ?? undefined);
+    snapTo('SEARCH');
+  }, [onDrawRoute, onStartNav, selectedDest]);
 
   const handleStopNav = () => { setNavIdx(-1); onStopNav(); if (routes.length > 0) snapTo('ROUTES'); };
 
@@ -453,7 +480,7 @@ export const RoutePlannerScreen = ({
 
       <AnimatePresence>
         {navIdx >= 0 && activeRoute && selectedDest && (
-          <NavigationBar route={activeRoute} destination={selectedDest.display_name} userLocation={userLocation} onStop={handleStopNav} onExpand={() => snapTo('ROUTES')} />
+          <NavigationBar route={activeRoute} destination={selectedDest.display_name} userLocation={userLocation} onStop={handleStopNav} onExpand={() => snapTo('ROUTES')} isRerouting={isRerouting} />
         )}
       </AnimatePresence>
     </>
