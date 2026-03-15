@@ -28,7 +28,7 @@ export const MenuScreen = ({ onClose, t }: MenuScreenProps) => (
           </div>
         </div>
         <div>
-          <h3 className="font-bold text-slate-800">About SafeWalk</h3>
+          <h3 className="font-bold text-slate-800">About NoWo</h3>
           <p className="text-xs text-slate-400">Version 1.2.4 (Beta)</p>
         </div>
       </div>

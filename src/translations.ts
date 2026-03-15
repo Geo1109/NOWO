@@ -2,7 +2,7 @@ import { Language } from './types';
 
 export const translations: Record<Language, any> = {
   en: {
-    appName: "SafeWalk",
+    appName: "NoWo",
     emergency: "🚨 Emergency: Share live location",
     alertIfNoArrive: "Alert if not arrived in:",
     safeRoute: "Safe Route",
@@ -48,7 +48,7 @@ export const translations: Record<Language, any> = {
     }
   },
   ro: {
-    appName: "SafeWalk",
+    appName: "NoWo",
     emergency: "🚨 Urgență: Partajează locația live",
     alertIfNoArrive: "Alertă dacă nu ajung în:",
     safeRoute: "Traseu Sigur",

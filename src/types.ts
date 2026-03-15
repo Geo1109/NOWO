@@ -24,6 +24,10 @@ export interface Report {
   timestamp: string;
   isLive: boolean;
   weight: number;
+  /** ISO string — when this report auto-expires (20 min from creation/last confirm) */
+  expiresAt?: string;
+  /** Set to true by Cloud Function or client-side expiry check */
+  expired?: boolean;
 }
 
 export interface SafeSpace {
@@ -33,13 +37,11 @@ export interface SafeSpace {
   name: string;
   type: 'pharmacy' | 'hospital' | 'police' | 'supermarket' | 'convenience' | 'doctors' | 'clinic' | 'store';
   details: string;
-  // Fields populated from real Overpass data (optional)
   address?: string;
   phone?: string;
   openingHours?: string;
   website?: string;
   distance?: number;
-  // Legacy field (kept for backward compat with mock data)
   openNow?: boolean;
 }
 
